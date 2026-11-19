@@ -81,12 +81,16 @@ export interface ProcessDiscContext {
   };
 }
 
-export function computeLotMetricsBasic(_yearQty?: number, excludeAutoCut = false): LotMetrics {
+export function computeLotMetricsBasic(lotInput?: number, excludeAutoCut = false): LotMetrics {
+  const effLot =
+    typeof lotInput === 'number' && Number.isFinite(lotInput) && lotInput > 0
+      ? Math.max(1, lotInput)
+      : 15;
   return {
     monthlyQty: 0,
     dailyQty: 0,
-    rawLot: 1,
-    effectiveLot: 1,
+    rawLot: effLot,
+    effectiveLot: effLot,
     isAutoCutActive: !excludeAutoCut,
   };
 }
@@ -114,8 +118,8 @@ export function buildProcessDiscContext(
     terminalRatios: ratios = {},
   } = payload;
   const excludeAutoCut = Boolean(options?.excludeAutoCut);
-  const lotMetrics = computeLotMetricsBasic(params.yearQty, excludeAutoCut);
-  const lot = lotMetrics.effectiveLot; // Uniform standard basis (= 1)
+  const lotMetrics = computeLotMetricsBasic(params.lot, excludeAutoCut);
+  const lot = lotMetrics.effectiveLot;
   const isAcLotActive = !excludeAutoCut;
   const cctMaster = params.masterCct || 0;
   const ppcsCount = ppcs.filter((r) => r.assyNo !== '').length;

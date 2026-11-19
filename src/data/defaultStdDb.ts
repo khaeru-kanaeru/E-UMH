@@ -375,6 +375,7 @@ export const SAMPLE_KHR_PAYLOAD: AssyInputPayload = {
     assyNo: 'KHR55431-00',
     customer: 'SUMITOMO',
     yearQty: 2280,
+    lot: 15,
     masterCct: 313,
     pfdAllowancePct: 15,
     allowanceMode: 'by_process',

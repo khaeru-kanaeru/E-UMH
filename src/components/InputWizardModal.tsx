@@ -14,7 +14,9 @@ import {
 } from 'lucide-react';
 import { SAMPLE_KHR_PAYLOAD } from '../data/defaultStdDb';
 import {
+  DEFAULT_LOT_SIZE,
   extractAutoCutCandidateTerminals,
+  getAllowanceModeLabel,
   parseWireSize,
 } from '../engine/umhCalculator';
 import {
@@ -73,15 +75,27 @@ export function InputWizardModal({
   onClose,
   onSaveAndCalculate,
 }: InputWizardModalProps) {
-  const [params, setParams] = useState<AssyParams>(
-    initialPayload?.params ?? {
-      assyNo: '',
-      customer: '',
-      masterCct: 313,
-      pfdAllowancePct: 15,
-      allowanceMode: 'by_process',
-    }
+  const [assyNo, setAssyNo] = useState<string>(initialPayload?.params.assyNo ?? '');
+  const [customer, setCustomer] = useState<string>(initialPayload?.params.customer ?? '');
+  const [masterCctStr, setMasterCctStr] = useState<string>(
+    initialPayload && initialPayload.params.masterCct > 0
+      ? String(initialPayload.params.masterCct)
+      : ''
   );
+  const [lotStr, setLotStr] = useState<string>(
+    initialPayload?.params.lot && initialPayload.params.lot > 0
+      ? String(initialPayload.params.lot)
+      : String(DEFAULT_LOT_SIZE)
+  );
+  const [allowanceMode, setAllowanceMode] = useState<AllowanceMode | ''>(
+    initialPayload?.params.allowanceMode ?? ''
+  );
+  const [pfdAllowanceStr, setPfdAllowanceStr] = useState<string>(
+    initialPayload && initialPayload.params.allowanceMode !== 'none'
+      ? String(initialPayload.params.pfdAllowancePct ?? '')
+      : ''
+  );
+  const [validationError, setValidationError] = useState<string | null>(null);
 
   const [assemblyComponents, setAssemblyComponents] = useState<AssemblyComponents>(
     initialPayload?.assemblyComponents ?? {
@@ -110,10 +124,59 @@ export function InputWizardModal({
   const [isParsingTemplate, setIsParsingTemplate] = useState(false);
   const [previewTarget, setPreviewTarget] = useState<'partlist' | 'ppcs' | 'assembly' | null>(null);
 
+  const formContainerRef = useRef<HTMLDivElement>(null);
+  const cctInputRef = useRef<HTMLInputElement>(null);
+  const lotInputRef = useRef<HTMLInputElement>(null);
+  const modeSelectRef = useRef<HTMLSelectElement>(null);
+  const allowanceInputRef = useRef<HTMLInputElement>(null);
+  const submitButtonRef = useRef<HTMLButtonElement>(null);
+
   const masterInputRef = useRef<HTMLInputElement>(null);
   const partListInputRef = useRef<HTMLInputElement>(null);
   const ppcsInputRef = useRef<HTMLInputElement>(null);
   const cotInputRef = useRef<HTMLInputElement>(null);
+
+  const parsedMasterCct = masterCctStr.trim() === '' ? 0 : Math.max(0, Number(masterCctStr) || 0);
+  const parsedLot = lotStr.trim() === '' ? 0 : Math.max(0, Number(lotStr) || 0);
+  const parsedAllowancePct =
+    allowanceMode === 'none' || pfdAllowanceStr.trim() === ''
+      ? 0
+      : Math.max(0, Number(pfdAllowanceStr) || 0);
+
+  // Lean keyboard input: Enter moves focus to the next visible field (Shift+Enter moves backward)
+  const handleLeanEnterKeyDown = (e: React.KeyboardEvent<HTMLDivElement>) => {
+    if (e.key !== 'Enter') return;
+    const target = e.target as HTMLElement | null;
+    if (!target) return;
+    const tag = target.tagName;
+    if (tag !== 'INPUT' && tag !== 'SELECT') return;
+    const inputEl = target as HTMLInputElement;
+    if (inputEl.type === 'file' || inputEl.type === 'button' || inputEl.type === 'submit') return;
+
+    e.preventDefault();
+    const container = formContainerRef.current;
+    if (!container) return;
+
+    const focusables = Array.from(
+      container.querySelectorAll<HTMLInputElement | HTMLSelectElement>(
+        'input:not([type="hidden"]):not([type="file"]):not(:disabled), select:not(:disabled)'
+      )
+    ).filter((el) => el.offsetParent !== null);
+
+    const currentIdx = focusables.indexOf(target as HTMLInputElement | HTMLSelectElement);
+    if (currentIdx === -1) return;
+
+    const nextIdx = e.shiftKey ? currentIdx - 1 : currentIdx + 1;
+    if (nextIdx >= 0 && nextIdx < focusables.length) {
+      const nextEl = focusables[nextIdx];
+      nextEl.focus();
+      if (nextEl.tagName === 'INPUT') {
+        (nextEl as HTMLInputElement).select();
+      }
+    } else if (!e.shiftKey) {
+      submitButtonRef.current?.focus();
+    }
+  };
 
   const candidateTerminals = useMemo(
     () => extractAutoCutCandidateTerminals(ppcsList),
@@ -195,11 +258,8 @@ export function InputWizardModal({
     autoPopulateAsm: boolean
   ) => {
     if (parsedPl.length > 0) {
-      setParams((prev) => ({
-        ...prev,
-        assyNo: prev.assyNo || parsedPl[0].assyNo,
-        customer: prev.customer || parsedPl[0].customer,
-      }));
+      setAssyNo((prev) => prev || parsedPl[0].assyNo);
+      setCustomer((prev) => prev || parsedPl[0].customer);
     }
     if (autoPopulateAsm && parsedPl.length > 0) {
       setAssemblyComponents((prev) => deriveAsmComponentsFromPl(parsedPl, prev));
@@ -209,6 +269,7 @@ export function InputWizardModal({
   const handleTemplateUpload = async (file: File) => {
     setIsParsingTemplate(true);
     setTemplateImportReport(null);
+    setValidationError(null);
     setStatusMessage(`Memproses template "${file.name}"...`);
     try {
       const parsed = await parseMasterWorkbook(file, autoCutList, feederList);
@@ -217,18 +278,32 @@ export function InputWizardModal({
       const nextPpcs = parsed.ppcsList ?? ppcsList;
       const nextCot = parsed.assemblyCotList ?? assemblyCotList;
 
-      const nextParams: AssyParams = {
-        ...params,
-        ...(parsed.params ?? {}),
-        assyNo:
-          parsed.params?.assyNo ||
-          params.assyNo ||
-          nextPl[0]?.assyNo ||
-          nextPpcs[0]?.assyNo ||
-          '',
-        customer:
-          parsed.params?.customer || params.customer || nextPl[0]?.customer || '',
-      };
+      const nextAssyNo =
+        parsed.params?.assyNo ||
+        assyNo ||
+        nextPl[0]?.assyNo ||
+        nextPpcs[0]?.assyNo ||
+        '';
+      const nextCustomer =
+        parsed.params?.customer || customer || nextPl[0]?.customer || '';
+      const nextMasterCct =
+        parsed.params?.masterCct && parsed.params.masterCct > 0
+          ? parsed.params.masterCct
+          : parsedMasterCct;
+      const nextLot =
+        parsed.params?.lot && parsed.params.lot > 0
+          ? parsed.params.lot
+          : parsedLot > 0
+          ? parsedLot
+          : DEFAULT_LOT_SIZE;
+      const nextMode: AllowanceMode | '' =
+        parsed.params?.allowanceMode || allowanceMode;
+      const nextPfdStr =
+        nextMode === 'none'
+          ? ''
+          : parsed.params?.pfdAllowancePct !== undefined
+          ? String(parsed.params.pfdAllowancePct)
+          : pfdAllowanceStr;
 
       let nextAsm: AssemblyComponents = {
         ...assemblyComponents,
@@ -247,34 +322,50 @@ export function InputWizardModal({
         if (nextRatios[item.partNo] === undefined) nextRatios[item.partNo] = 100;
       }
 
-      setParams(nextParams);
+      setAssyNo(nextAssyNo);
+      setCustomer(nextCustomer);
+      if (nextMasterCct > 0) setMasterCctStr(String(nextMasterCct));
+      setLotStr(String(nextLot));
+      if (nextMode) setAllowanceMode(nextMode);
+      setPfdAllowanceStr(nextPfdStr);
+
       if (parsed.partList) setPartList(parsed.partList);
       if (parsed.ppcsList) setPpcsList(parsed.ppcsList);
       if (parsed.assemblyCotList) setAssemblyCotList(parsed.assemblyCotList);
       setAssemblyComponents(nextAsm);
       setTerminalRatios(nextRatios);
 
-      // Auto-calculate immediately ONLY when a complete multi-sheet template or pure Part Master CSV is uploaded
+      // Auto-calculate only when complete template AND allowance mode + % are explicitly ready
+      const isAllowanceReady =
+        nextMode === 'none' ||
+        (nextMode !== '' && nextPfdStr.trim() !== '' && Number.isFinite(Number(nextPfdStr)));
       const isCompleteTemplate =
-        parsed.detectedFormat === 'full_template' ||
-        (nextPl.length > 0 && nextPpcs.length > 0 && nextCot.length > 0);
+        (parsed.detectedFormat === 'full_template' ||
+          (nextPl.length > 0 && nextPpcs.length > 0 && nextCot.length > 0)) &&
+        nextMasterCct > 0 &&
+        isAllowanceReady;
       const isFilledPartMasterOnly =
         parsed.detectedFormat === 'part_master_only' &&
-        Boolean(nextParams.assyNo) &&
-        nextParams.masterCct > 0;
+        Boolean(nextAssyNo) &&
+        nextMasterCct > 0 &&
+        isAllowanceReady;
 
       if (isCompleteTemplate || isFilledPartMasterOnly) {
-        const cleanAssy = nextParams.assyNo.trim() || `ASSY-${Date.now()}`;
+        const cleanAssy = nextAssyNo.trim() || `ASSY-${Date.now()}`;
         const now = new Date().toISOString();
+        const finalParams: AssyParams = {
+          assyNo: cleanAssy,
+          customer: nextCustomer.trim() || (nextPl[0]?.customer ?? '-'),
+          masterCct: nextMasterCct,
+          lot: nextLot,
+          allowanceMode: nextMode as AllowanceMode,
+          pfdAllowancePct: nextMode === 'none' ? 0 : Math.max(0, Number(nextPfdStr) || 0),
+        };
         onSaveAndCalculate({
           id: initialPayload?.id ?? `assy_${Date.now()}`,
           createdAt: initialPayload?.createdAt ?? now,
           updatedAt: now,
-          params: {
-            ...nextParams,
-            assyNo: cleanAssy,
-            customer: nextParams.customer.trim() || (nextPl[0]?.customer ?? '-'),
-          },
+          params: finalParams,
           assemblyComponents: nextAsm,
           partList: nextPl,
           ppcsList: nextPpcs,
@@ -283,6 +374,8 @@ export function InputWizardModal({
         });
         return;
       }
+
+      const nextParamsExtractedCct = nextMasterCct;
 
       // Engineering PL_REV or partial workbook: populate extracted data & guide user to upload remaining files (PPCS / Assembly COT / manual input)
       const jointCodes = new Set([
@@ -315,9 +408,9 @@ export function InputWizardModal({
         detectedFormat: parsed.detectedFormat,
         plSheetName: parsed.plSheetName,
         ppcsSheetName: parsed.ppcsSheetName,
-        extractedAssyNo: nextParams.assyNo || '-',
-        extractedCustomer: nextParams.customer || '-',
-        extractedCct: nextParams.masterCct,
+        extractedAssyNo: nextAssyNo || '-',
+        extractedCustomer: nextCustomer || '-',
+        extractedCct: nextParamsExtractedCct,
         plCount: nextPl.length,
         housingConnTypes: housingConns.length,
         housingConnQty: housingConns.reduce((a, b) => a + b.qty, 0),
@@ -326,7 +419,11 @@ export function InputWizardModal({
         jointQty,
         asmDetected,
       });
-      setStatusMessage(null);
+      setStatusMessage(
+        !isAllowanceReady
+          ? 'Data file berhasil dimuat. Silakan pilih Metode Distribusi Allowance sebelum kalkulasi.'
+          : null
+      );
     } catch {
       setStatusMessage(
         'Gagal membaca file template. Pastikan format .xlsx, .xls, atau .csv valid.'
@@ -346,12 +443,14 @@ export function InputWizardModal({
       applyPartListSideEffects(parsed, true);
 
       if (masterMeta) {
-        setParams((prev) => ({
-          ...prev,
-          assyNo: masterMeta.assyNo || prev.assyNo,
-          customer: masterMeta.customer || prev.customer,
-          masterCct: masterMeta.masterCct || prev.masterCct,
-        }));
+        if (masterMeta.assyNo) setAssyNo(masterMeta.assyNo);
+        if (masterMeta.customer) setCustomer(masterMeta.customer);
+        if (masterMeta.masterCct && masterMeta.masterCct > 0) {
+          setMasterCctStr(String(masterMeta.masterCct));
+        }
+        if (masterMeta.lot && masterMeta.lot > 0) {
+          setLotStr(String(masterMeta.lot));
+        }
       }
 
       if (ppcsList.length > 0) {
@@ -385,7 +484,7 @@ export function InputWizardModal({
     setIsParsingTemplate(true);
     try {
       const grid = await parseSingleSheetGrid(file, 'ppcs');
-      const fallbackAssy = params.assyNo || partList[0]?.assyNo || '';
+      const fallbackAssy = assyNo || partList[0]?.assyNo || '';
       const parsed = parsePpcsFromGrid(grid, partList, autoCutList, feederList, fallbackAssy);
       setPpcsList(parsed);
       setStatusMessage(`PPCS "${file.name}" dimuat: ${parsed.length} sirkuit.`);
@@ -411,12 +510,18 @@ export function InputWizardModal({
   };
 
   const handleLoadSampleKhr = () => {
-    setParams({ ...SAMPLE_KHR_PAYLOAD.params });
+    setAssyNo(SAMPLE_KHR_PAYLOAD.params.assyNo);
+    setCustomer(SAMPLE_KHR_PAYLOAD.params.customer);
+    setMasterCctStr(String(SAMPLE_KHR_PAYLOAD.params.masterCct));
+    setLotStr(String(SAMPLE_KHR_PAYLOAD.params.lot ?? DEFAULT_LOT_SIZE));
+    setAllowanceMode(SAMPLE_KHR_PAYLOAD.params.allowanceMode);
+    setPfdAllowanceStr(String(SAMPLE_KHR_PAYLOAD.params.pfdAllowancePct));
     setAssemblyComponents({ ...SAMPLE_KHR_PAYLOAD.assemblyComponents });
     setPartList([...SAMPLE_KHR_PAYLOAD.partList]);
     setPpcsList([...SAMPLE_KHR_PAYLOAD.ppcsList]);
     setAssemblyCotList([...SAMPLE_KHR_PAYLOAD.assemblyCotList]);
     setTerminalRatios({ ...SAMPLE_KHR_PAYLOAD.terminalRatios });
+    setValidationError(null);
     setStatusMessage('Parameter & Assembly COT KHR55431-00 dimuat.');
   };
 
@@ -430,22 +535,55 @@ export function InputWizardModal({
   };
 
   const handleSubmit = () => {
-    const cleanAssy = params.assyNo.trim() || `ASSY-${Date.now()}`;
+    setValidationError(null);
+
+    if (masterCctStr.trim() === '' || parsedMasterCct <= 0) {
+      setValidationError('Jumlah CCT wajib diisi dengan angka lebih dari 0.');
+      cctInputRef.current?.focus();
+      return;
+    }
+
+    if (lotStr.trim() === '' || parsedLot < 1) {
+      setValidationError('Nilai LOT wajib diisi (minimal 1).');
+      lotInputRef.current?.focus();
+      return;
+    }
+
+    if (!allowanceMode) {
+      setValidationError('Pilih Metode Distribusi Allowance terlebih dahulu (0, 1, atau 2).');
+      modeSelectRef.current?.focus();
+      return;
+    }
+
+    if (allowanceMode !== 'none' && pfdAllowanceStr.trim() === '') {
+      setValidationError(
+        'Masukkan angka % Allowance PFD terlebih dahulu untuk metode yang dipilih.'
+      );
+      allowanceInputRef.current?.focus();
+      return;
+    }
+
+    const cleanAssy = assyNo.trim() || `ASSY-${Date.now()}`;
     const now = new Date().toISOString();
     const finalRatios: TerminalRatios = { ...terminalRatios };
     for (const item of candidateTerminals) {
       if (finalRatios[item.partNo] === undefined) finalRatios[item.partNo] = 100;
     }
 
+    const finalParams: AssyParams = {
+      assyNo: cleanAssy,
+      customer: customer.trim() || (partList[0]?.customer ?? '-'),
+      masterCct: Math.round(parsedMasterCct),
+      lot: Math.max(1, Math.round(parsedLot)),
+      allowanceMode,
+      pfdAllowancePct: allowanceMode === 'none' ? 0 : parsedAllowancePct,
+    };
+
     onSaveAndCalculate({
       id: initialPayload?.id ?? `assy_${Date.now()}`,
       createdAt: initialPayload?.createdAt ?? now,
       updatedAt: now,
-      params: {
-        ...params,
-        assyNo: cleanAssy,
-        customer: params.customer.trim() || (partList[0]?.customer ?? '-'),
-      },
+      params: finalParams,
       assemblyComponents,
       partList,
       ppcsList,
@@ -561,8 +699,24 @@ export function InputWizardModal({
 
         {/* Body Content: Compact Notices + Single 3-Section Landscape Form */}
         <div className="flex-1 overflow-y-auto bg-[#f8fafc]">
-          {(statusMessage || templateImportReport) && (
+          {(statusMessage || validationError || templateImportReport) && (
             <div className="px-5 pt-4 space-y-2.5">
+              {validationError && (
+                <div className="px-3.5 py-2.5 rounded-lg bg-red-50 border border-red-200 text-xs font-semibold text-red-700 flex items-center justify-between gap-2">
+                  <span className="flex items-center gap-2">
+                    <AlertCircle className="w-4 h-4 shrink-0" />
+                    <span>{validationError}</span>
+                  </span>
+                  <button
+                    type="button"
+                    onClick={() => setValidationError(null)}
+                    className="text-red-500 hover:text-red-800 cursor-pointer"
+                  >
+                    <X className="w-3.5 h-3.5" />
+                  </button>
+                </div>
+              )}
+
               {statusMessage && (
                 <div className="px-3.5 py-2 rounded-lg bg-blue-50 border border-blue-200 text-xs font-medium text-[#1E3A8A] flex items-center justify-between gap-2">
                   <span className="flex items-center gap-2">
@@ -587,8 +741,8 @@ export function InputWizardModal({
                       <p className="font-semibold text-emerald-950 truncate">
                         {templateImportReport.fileName} —{' '}
                         <span className="font-mono-num">
-                          Assy {params.assyNo || templateImportReport.extractedAssyNo} ·{' '}
-                          {params.customer || templateImportReport.extractedCustomer} · CCT {params.masterCct}
+                          Assy {assyNo || templateImportReport.extractedAssyNo} ·{' '}
+                          {customer || templateImportReport.extractedCustomer} · CCT {parsedMasterCct || '-'}
                         </span>
                       </p>
                       <p className="text-[11px] text-slate-600 font-mono-num flex flex-wrap items-center gap-x-2.5 gap-y-0.5">
@@ -600,7 +754,7 @@ export function InputWizardModal({
                         <span>
                           PPCS{templateImportReport.ppcsSheetName ? ` (${templateImportReport.ppcsSheetName})` : ''}:{' '}
                           <strong className="text-slate-900">{ppcsList.length} sirkuit</strong>
-                          {ppcsList.length > 0 && params.masterCct > 0 && ppcsList.length === params.masterCct && (
+                          {ppcsList.length > 0 && parsedMasterCct > 0 && ppcsList.length === parsedMasterCct && (
                             <span className="text-emerald-700 font-semibold"> ✓ Cocok CCT</span>
                           )}
                         </span>
@@ -649,19 +803,28 @@ export function InputWizardModal({
             </div>
           )}
 
-          {/* 3-Section Landscape Grid */}
-          <div className="p-5 grid grid-cols-1 xl:grid-cols-12 gap-0 xl:gap-0">
+          {/* 3-Section Landscape Grid (Enter navigates column-by-column) */}
+          <div
+            ref={formContainerRef}
+            onKeyDown={handleLeanEnterKeyDown}
+            className="p-5 grid grid-cols-1 xl:grid-cols-12 gap-0 xl:gap-0"
+          >
             <div className="xl:col-span-12 rounded-xl border border-slate-200 bg-white grid grid-cols-1 xl:grid-cols-3 divide-y xl:divide-y-0 xl:divide-x divide-slate-200">
               {/* SEKAT 1: Parameter & Identitas Assy */}
               <section className="p-5 flex flex-col justify-between gap-4">
                 <div className="space-y-4">
-                  <div className="pb-3 border-b border-slate-100">
-                    <h3 className="text-sm font-bold text-slate-900">
-                      01. Parameter &amp; Identitas Assy
-                    </h3>
-                    <p className="text-xs text-slate-500 mt-0.5">
-                      Identitas Assy, jumlah CCT master, dan aturan allowance PFD.
-                    </p>
+                  <div className="pb-3 border-b border-slate-100 flex items-start justify-between gap-2">
+                    <div>
+                      <h3 className="text-sm font-bold text-slate-900">
+                        01. Parameter &amp; Identitas Assy
+                      </h3>
+                      <p className="text-xs text-slate-500 mt-0.5">
+                        Identitas Assy, jumlah CCT, LOT, dan metode allowance.
+                      </p>
+                    </div>
+                    <span className="text-[10px] font-mono-num font-semibold text-slate-500 bg-slate-100 border border-slate-200 px-2 py-0.5 rounded-md whitespace-nowrap shrink-0">
+                      Enter ↵ lanjut
+                    </span>
                   </div>
 
                   <div className="space-y-3.5">
@@ -669,8 +832,11 @@ export function InputWizardModal({
                       <span className="text-xs font-semibold text-slate-700">Assy Number</span>
                       <input
                         type="text"
-                        value={params.assyNo}
-                        onChange={(e) => setParams({ ...params, assyNo: e.target.value })}
+                        value={assyNo}
+                        onChange={(e) => {
+                          setAssyNo(e.target.value);
+                          setValidationError(null);
+                        }}
                         placeholder="Contoh: KHR55471-00"
                         className="w-full px-3 py-2 text-sm font-mono-num bg-slate-50 border border-slate-200 rounded-lg focus:bg-white focus:outline-none focus:ring-2 focus:ring-[#1E3A8A]/20 focus:border-[#1E3A8A]"
                       />
@@ -682,8 +848,8 @@ export function InputWizardModal({
                       </span>
                       <input
                         type="text"
-                        value={params.customer}
-                        onChange={(e) => setParams({ ...params, customer: e.target.value })}
+                        value={customer}
+                        onChange={(e) => setCustomer(e.target.value)}
                         placeholder="Terdeteksi otomatis saat upload PART LIST"
                         className="w-full px-3 py-2 text-sm bg-slate-50 border border-slate-200 rounded-lg focus:bg-white focus:outline-none focus:ring-2 focus:ring-[#1E3A8A]/20 focus:border-[#1E3A8A]"
                       />
@@ -691,32 +857,35 @@ export function InputWizardModal({
 
                     <div className="grid grid-cols-2 gap-3">
                       <label className="block space-y-1">
-                        <span className="text-xs font-semibold text-slate-700">Jumlah CCT</span>
+                        <span className="text-xs font-semibold text-slate-700">
+                          Jumlah CCT <span className="text-red-500">*</span>
+                        </span>
                         <input
+                          ref={cctInputRef}
                           type="number"
                           min="1"
-                          value={params.masterCct}
-                          onChange={(e) =>
-                            setParams({ ...params, masterCct: Math.max(1, Number(e.target.value)) })
-                          }
+                          value={masterCctStr}
+                          onChange={(e) => {
+                            setMasterCctStr(e.target.value);
+                            setValidationError(null);
+                          }}
                           className="w-full px-3 py-2 text-sm font-mono-num bg-slate-50 border border-slate-200 rounded-lg focus:bg-white focus:outline-none focus:ring-2 focus:ring-[#1E3A8A]/20 focus:border-[#1E3A8A]"
                         />
                       </label>
 
                       <label className="block space-y-1">
-                        <span className="text-xs font-semibold text-slate-700">Allowance PFD (%)</span>
+                        <span className="text-xs font-semibold text-slate-700">
+                          LOT <span className="text-[11px] font-normal text-slate-400">(Default 15)</span>
+                        </span>
                         <input
+                          ref={lotInputRef}
                           type="number"
-                          step="0.5"
-                          min="0"
-                          max="100"
-                          value={params.pfdAllowancePct}
-                          onChange={(e) =>
-                            setParams({
-                              ...params,
-                              pfdAllowancePct: Math.max(0, Number(e.target.value)),
-                            })
-                          }
+                          min="1"
+                          value={lotStr}
+                          onChange={(e) => {
+                            setLotStr(e.target.value);
+                            setValidationError(null);
+                          }}
                           className="w-full px-3 py-2 text-sm font-mono-num bg-slate-50 border border-slate-200 rounded-lg focus:bg-white focus:outline-none focus:ring-2 focus:ring-[#1E3A8A]/20 focus:border-[#1E3A8A]"
                         />
                       </label>
@@ -724,22 +893,51 @@ export function InputWizardModal({
 
                     <label className="block space-y-1">
                       <span className="text-xs font-semibold text-slate-700">
-                        Metode Distribusi Allowance
+                        Metode Distribusi Allowance <span className="text-red-500">*</span>
                       </span>
                       <select
-                        value={params.allowanceMode}
-                        onChange={(e) =>
-                          setParams({
-                            ...params,
-                            allowanceMode: e.target.value as AllowanceMode,
-                          })
-                        }
-                        className="w-full px-3 py-2 text-sm bg-slate-50 border border-slate-200 rounded-lg focus:bg-white focus:outline-none focus:ring-2 focus:ring-[#1E3A8A]/20 focus:border-[#1E3A8A]"
+                        ref={modeSelectRef}
+                        value={allowanceMode}
+                        onChange={(e) => {
+                          const next = e.target.value as AllowanceMode | '';
+                          setAllowanceMode(next);
+                          if (next === 'none' || next === '') {
+                            setPfdAllowanceStr('');
+                          }
+                          setValidationError(null);
+                        }}
+                        className={`w-full px-3 py-2 text-sm bg-slate-50 border border-slate-200 rounded-lg focus:bg-white focus:outline-none focus:ring-2 focus:ring-[#1E3A8A]/20 focus:border-[#1E3A8A] ${
+                          allowanceMode === '' ? 'text-slate-500' : 'text-slate-900 font-medium'
+                        }`}
                       >
+                        <option value="">-- Pilih Metode Distribusi --</option>
+                        <option value="none">0. Tanpa Allowance (Base / 0%)</option>
                         <option value="by_process">1. By Proses (+% Tiap Proses → Substep)</option>
                         <option value="by_final">2. By Hasil Akhir (Distribusi Kesulitan → Substep)</option>
                       </select>
                     </label>
+
+                    {allowanceMode !== '' && allowanceMode !== 'none' && (
+                      <label className="block space-y-1">
+                        <span className="text-xs font-semibold text-slate-700">
+                          Allowance PFD (%) <span className="text-red-500">*</span>
+                        </span>
+                        <input
+                          ref={allowanceInputRef}
+                          type="number"
+                          step="0.5"
+                          min="0"
+                          max="100"
+                          value={pfdAllowanceStr}
+                          onChange={(e) => {
+                            setPfdAllowanceStr(e.target.value);
+                            setValidationError(null);
+                          }}
+                          placeholder="Isi persentase allowance (cth: 15)"
+                          className="w-full px-3 py-2 text-sm font-mono-num bg-slate-50 border border-slate-200 rounded-lg focus:bg-white focus:outline-none focus:ring-2 focus:ring-[#1E3A8A]/20 focus:border-[#1E3A8A]"
+                        />
+                      </label>
+                    )}
                   </div>
                 </div>
 
@@ -1108,7 +1306,11 @@ export function InputWizardModal({
         {/* Modal Footer */}
         <div className="px-5 py-3.5 border-t border-slate-200 bg-white flex flex-wrap items-center justify-between gap-3">
           <div className="text-xs text-slate-500 font-mono-num">
-            {params.assyNo || 'Assy belum diisi'} · CCT {params.masterCct} · PFD {params.pfdAllowancePct}%
+            {assyNo || 'Assy belum diisi'} · CCT {parsedMasterCct || '-'} · LOT {parsedLot || '-'} ·{' '}
+            {allowanceMode ? getAllowanceModeLabel(allowanceMode, 'numbered') : 'Metode belum dipilih'}
+            {allowanceMode && allowanceMode !== 'none'
+              ? ` (${pfdAllowanceStr.trim() === '' ? '-' : `${parsedAllowancePct}%`})`
+              : ''}
           </div>
 
           <div className="flex items-center gap-2.5">
@@ -1120,6 +1322,7 @@ export function InputWizardModal({
               Batal
             </button>
             <button
+              ref={submitButtonRef}
               type="button"
               onClick={handleSubmit}
               className="inline-flex items-center gap-1.5 px-5 py-2 rounded-lg bg-[#047857] text-white text-xs font-semibold hover:bg-[#065F46] cursor-pointer whitespace-nowrap"

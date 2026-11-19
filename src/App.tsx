@@ -22,6 +22,7 @@ import { AutoCutFeederView } from './components/AutoCutFeederView';
 import { DatabaseAssyView } from './components/DatabaseAssyView';
 import { HomeView } from './components/HomeView';
 import { InputWizardModal } from './components/InputWizardModal';
+import { MasterChangeHistoryModal } from './components/MasterChangeHistoryModal';
 import { PdfReportModal } from './components/PdfReportModal';
 import { RecycleBinView } from './components/RecycleBinView';
 import { RefreshHistoryModal } from './components/RefreshHistoryModal';
@@ -29,11 +30,7 @@ import { RefreshHistoryPdfModal } from './components/RefreshHistoryPdfModal';
 import { RefreshUmhModal } from './components/RefreshUmhModal';
 import { StdParamsView } from './components/StdParamsView';
 import { DEFAULT_PROCESS_DISCS } from './data/defaultProcessDiscs';
-import {
-  DEFAULT_AUTO_CUT_LIST,
-  DEFAULT_FEEDER_LIST,
-  DEFAULT_STD_DATABASE,
-} from './data/defaultStdDb';
+import { DEFAULT_STD_DATABASE } from './data/defaultStdDb';
 import { calculateUmh } from './engine/umhCalculator';
 import { FIRESTORE_DATABASE_ID, auth, googleProvider } from './firebase';
 import {
@@ -45,7 +42,10 @@ import {
   buildRecycleBinItemFromDisc,
   buildRecycleBinItemFromFeeder,
   buildRecycleBinItemFromHistory,
+  clearMasterChangeHistoryInCloud,
+  createMasterChangeHistoryInCloud,
   createRefreshHistoryInCloud,
+  deleteMasterChangeHistoryInCloud,
   emptyRecycleBinInCloud,
   initializeCloudWorkspace,
   isRecycleBinPermissionError,
@@ -74,6 +74,8 @@ import {
   AssyRecord,
   AutoCutItem,
   FeederItem,
+  MasterChangeCategory,
+  MasterChangeHistoryEntry,
   NavTab,
   ProcessLogicDisc,
   RecycleBinItem,
@@ -86,15 +88,16 @@ import {
   loadAutoCutList,
   loadFeederList,
   loadLastPicName,
+  loadMasterChangeHistory,
   loadPendingMasterSync,
   loadRecycleBin,
   loadRefreshHistory,
   loadStdDatabase,
-  resetStdDatabase,
   saveAssyPayloads,
   saveAutoCutList,
   saveFeederList,
   saveLastPicName,
+  saveMasterChangeHistory,
   savePendingMasterSync,
   saveRecycleBin,
   saveRefreshHistory,
@@ -117,6 +120,9 @@ export default function App() {
   );
   const [refreshHistory, setRefreshHistory] = useState<RefreshHistoryEntry[]>(() =>
     loadRefreshHistory()
+  );
+  const [masterChangeHistory, setMasterChangeHistory] = useState<MasterChangeHistoryEntry[]>(() =>
+    loadMasterChangeHistory()
   );
   const [recycleBin, setRecycleBin] = useState<RecycleBinItem[]>(() => loadRecycleBin());
 
@@ -147,6 +153,10 @@ export default function App() {
   } | null>(null);
   const [refreshModalOpen, setRefreshModalOpen] = useState(false);
   const [historyModalOpen, setHistoryModalOpen] = useState(false);
+  const [masterHistoryModal, setMasterHistoryModal] = useState<{
+    open: boolean;
+    category: 'all' | MasterChangeCategory;
+  }>({ open: false, category: 'all' });
   const [pdfHistoryEntry, setPdfHistoryEntry] = useState<RefreshHistoryEntry | null>(null);
   const [refreshNotice, setRefreshNotice] = useState<string | null>(null);
 
@@ -334,7 +344,11 @@ export default function App() {
               setRefreshHistory(cloudHistory);
               saveRefreshHistory(cloudHistory);
             },
-            handleCloudMutationError
+            handleCloudMutationError,
+            (cloudMasterHist) => {
+              setMasterChangeHistory(cloudMasterHist);
+              saveMasterChangeHistory(cloudMasterHist);
+            }
           )
         );
 
@@ -456,15 +470,6 @@ export default function App() {
     syncMasterToCloud(true);
   };
 
-  const handleResetStdDb = (): StdDatabase => {
-    const fresh = resetStdDatabase();
-    localSnapshotRef.current.stdDb = fresh;
-    setStdDb(fresh);
-    markMasterChanged();
-    syncMasterToCloud(true);
-    return fresh;
-  };
-
   const handleUpdateAutoCut = (nextList: AutoCutItem[], immediate = true) => {
     localSnapshotRef.current.autoCutList = nextList;
     setAutoCutList(nextList);
@@ -481,24 +486,57 @@ export default function App() {
     syncMasterToCloud(immediate);
   };
 
-  const handleResetAutoCut = (): AutoCutItem[] => {
-    const fresh = structuredClone(DEFAULT_AUTO_CUT_LIST);
-    localSnapshotRef.current.autoCutList = fresh;
-    setAutoCutList(fresh);
-    saveAutoCutList(fresh);
-    markMasterChanged();
-    syncMasterToCloud(true);
-    return fresh;
+  const recordMasterHistoryEntries = (entries: MasterChangeHistoryEntry[]) => {
+    if (entries.length === 0) return;
+    setMasterChangeHistory((prev) => {
+      const next = [...entries, ...prev];
+      saveMasterChangeHistory(next);
+      return next;
+    });
+    const pic = entries[0]?.responsibleName;
+    if (pic) {
+      saveLastPicName(pic);
+    }
+    if (isCloudActive && authUser) {
+      const uid = authUser.uid;
+      entries.forEach((entry) => {
+        void createMasterChangeHistoryInCloud(uid, entry).catch(handleCloudMutationError);
+      });
+      if (pic) {
+        void updateUserPreferencesInCloud(uid, { lastPicName: pic }).catch(
+          handleCloudMutationError
+        );
+      }
+    }
   };
 
-  const handleResetFeeder = (): FeederItem[] => {
-    const fresh = structuredClone(DEFAULT_FEEDER_LIST);
-    localSnapshotRef.current.feederList = fresh;
-    setFeederList(fresh);
-    saveFeederList(fresh);
-    markMasterChanged();
-    syncMasterToCloud(true);
-    return fresh;
+  const handleCommitStdBulkEdit = (
+    nextDb: StdDatabase,
+    entries: MasterChangeHistoryEntry[]
+  ) => {
+    handleSaveStdDb(nextDb);
+    recordMasterHistoryEntries(entries);
+  };
+
+  const handleDeleteMasterHistoryEntry = (id: string) => {
+    setMasterChangeHistory((prev) => {
+      const next = prev.filter((e) => e.id !== id);
+      saveMasterChangeHistory(next);
+      return next;
+    });
+    if (isCloudActive && authUser) {
+      void deleteMasterChangeHistoryInCloud(authUser.uid, id).catch(handleCloudMutationError);
+    }
+  };
+
+  const handleClearMasterHistory = () => {
+    if (masterChangeHistory.length === 0) return;
+    const ids = masterChangeHistory.map((e) => e.id);
+    setMasterChangeHistory([]);
+    saveMasterChangeHistory([]);
+    if (isCloudActive && authUser) {
+      void clearMasterChangeHistoryInCloud(authUser.uid, ids).catch(handleCloudMutationError);
+    }
   };
 
   const handleCompleteRefresh = (
@@ -553,55 +591,63 @@ export default function App() {
 
   const useDedicatedCloudBin = isCloudActive && Boolean(authUser) && !recycleBinNeedsRulesPublish;
 
-  const handleDeleteAutoCutItem = (item: AutoCutItem) => {
-    const nextList = autoCutList.filter((a) => a.id !== item.id);
-    const binItem = buildRecycleBinItemFromAutoCut(item);
-    const scopedBinItem: RecycleBinItem = {
-      ...binItem,
-      id: isCloudActive && authUser ? toScopedDocId(authUser.uid, binItem.id) : binItem.id,
-    };
+  const handleCommitAutoCutChange = (
+    nextList: AutoCutItem[],
+    entry: MasterChangeHistoryEntry,
+    removedItems: AutoCutItem[]
+  ) => {
+    handleUpdateAutoCut(nextList, true);
+    recordMasterHistoryEntries([entry]);
 
-    localSnapshotRef.current.autoCutList = nextList;
-    setAutoCutList(nextList);
-    saveAutoCutList(nextList);
-    setRecycleBin((prev) => {
-      const next = [scopedBinItem, ...prev];
-      saveRecycleBin(next);
-      return next;
-    });
-    markMasterChanged();
-    syncMasterToCloud(true);
-
-    if (useDedicatedCloudBin && authUser) {
-      void addMasterItemToRecycleBinInCloud(authUser.uid, scopedBinItem).catch(
-        handleCloudMutationError
-      );
+    if (removedItems.length > 0) {
+      const binItems: RecycleBinItem[] = removedItems.map((item) => {
+        const base = buildRecycleBinItemFromAutoCut(item);
+        return {
+          ...base,
+          id: isCloudActive && authUser ? toScopedDocId(authUser.uid, base.id) : base.id,
+        };
+      });
+      setRecycleBin((prev) => {
+        const next = [...binItems, ...prev];
+        saveRecycleBin(next);
+        return next;
+      });
+      if (useDedicatedCloudBin && authUser) {
+        const uid = authUser.uid;
+        binItems.forEach((b) => {
+          void addMasterItemToRecycleBinInCloud(uid, b).catch(handleCloudMutationError);
+        });
+      }
     }
   };
 
-  const handleDeleteFeederItem = (item: FeederItem) => {
-    const nextList = feederList.filter((f) => f.id !== item.id);
-    const binItem = buildRecycleBinItemFromFeeder(item);
-    const scopedBinItem: RecycleBinItem = {
-      ...binItem,
-      id: isCloudActive && authUser ? toScopedDocId(authUser.uid, binItem.id) : binItem.id,
-    };
+  const handleCommitFeederChange = (
+    nextList: FeederItem[],
+    entry: MasterChangeHistoryEntry,
+    removedItems: FeederItem[]
+  ) => {
+    handleUpdateFeeder(nextList, true);
+    recordMasterHistoryEntries([entry]);
 
-    localSnapshotRef.current.feederList = nextList;
-    setFeederList(nextList);
-    saveFeederList(nextList);
-    setRecycleBin((prev) => {
-      const next = [scopedBinItem, ...prev];
-      saveRecycleBin(next);
-      return next;
-    });
-    markMasterChanged();
-    syncMasterToCloud(true);
-
-    if (useDedicatedCloudBin && authUser) {
-      void addMasterItemToRecycleBinInCloud(authUser.uid, scopedBinItem).catch(
-        handleCloudMutationError
-      );
+    if (removedItems.length > 0) {
+      const binItems: RecycleBinItem[] = removedItems.map((item) => {
+        const base = buildRecycleBinItemFromFeeder(item);
+        return {
+          ...base,
+          id: isCloudActive && authUser ? toScopedDocId(authUser.uid, base.id) : base.id,
+        };
+      });
+      setRecycleBin((prev) => {
+        const next = [...binItems, ...prev];
+        saveRecycleBin(next);
+        return next;
+      });
+      if (useDedicatedCloudBin && authUser) {
+        const uid = authUser.uid;
+        binItems.forEach((b) => {
+          void addMasterItemToRecycleBinInCloud(uid, b).catch(handleCloudMutationError);
+        });
+      }
     }
   };
 
@@ -1030,76 +1076,78 @@ export default function App() {
   return (
     <div className="min-h-screen flex flex-col">
       {/* Sticky Top Header */}
-      <header className="sticky top-0 z-30 glass-header px-4 sm:px-6 h-16 flex items-center justify-between gap-8 print:hidden">
-        <div className="flex items-center gap-3 min-w-0">
-          <button
-            type="button"
-            onClick={() => setMobileMenuOpen((v) => !v)}
-            className="lg:hidden p-2 rounded-xl text-slate-600 hover:bg-slate-100 cursor-pointer"
-            aria-label="Menu Navigasi"
-          >
-            {mobileMenuOpen ? <X className="w-5 h-5" /> : <Menu className="w-5 h-5" />}
-          </button>
-
-          {/* Clean Japanese Precision Engineering Mark */}
-          <div
-            className="hidden sm:flex w-8 h-8 rounded-xl bg-[#1E3A8A] text-white items-center justify-center shrink-0"
-            aria-hidden="true"
-          >
-            <svg viewBox="0 0 24 24" className="w-4 h-4" fill="none" stroke="currentColor" strokeWidth="2">
-              <rect x="4" y="4" width="16" height="16" rx="3" strokeOpacity="0.45" />
-              <path d="M8 9h8M8 12h5M8 15h8" strokeLinecap="round" />
-              <circle cx="16.5" cy="12" r="1.25" fill="currentColor" stroke="none" />
-            </svg>
-          </div>
-
-          <span className="text-base sm:text-[17px] font-bold tracking-tight text-slate-900 whitespace-nowrap truncate">
-            STD / UMH Wire Harness Studio
-          </span>
-        </div>
-
-        <div className="flex items-center gap-2.5 shrink-0">
-          {authUser ? (
-            <div className="flex items-center gap-2">
-              <div className="hidden md:flex items-center gap-2 px-3 py-1.5 rounded-xl bg-slate-50 border border-slate-200 text-xs">
-                <Cloud className="w-3.5 h-3.5 text-[#047857]" />
-                <span className="font-semibold text-slate-800 max-w-[140px] truncate">
-                  {authUser.displayName || authUser.email}
-                </span>
-              </div>
-              <button
-                type="button"
-                disabled={authBusy}
-                onClick={handleGoogleSignOut}
-                className="inline-flex items-center gap-1.5 px-3 py-2 rounded-xl bg-white border border-slate-200 text-xs font-semibold text-slate-700 hover:bg-slate-50 transition-colors cursor-pointer whitespace-nowrap"
-              >
-                <LogOut className="w-3.5 h-3.5" />
-                <span className="hidden sm:inline">Keluar</span>
-              </button>
-            </div>
-          ) : (
+      <header className="sticky top-0 z-30 glass-header print:hidden">
+        <div className="max-w-[1600px] w-full mx-auto px-4 sm:px-6 h-16 flex items-center justify-between gap-6">
+          <div className="flex items-center gap-3 min-w-0">
             <button
               type="button"
-              disabled={authBusy || !authReady}
-              onClick={handleGoogleSignIn}
-              className="inline-flex items-center gap-1.5 px-3.5 py-2 rounded-xl bg-white border border-slate-200 text-xs font-semibold text-slate-800 hover:bg-slate-50 transition-colors cursor-pointer whitespace-nowrap"
+              onClick={() => setMobileMenuOpen((v) => !v)}
+              className="lg:hidden p-2 rounded-xl text-slate-600 hover:bg-slate-100 cursor-pointer"
+              aria-label="Menu Navigasi"
             >
-              <LogIn className="w-3.5 h-3.5 text-[#1E3A8A]" />
-              <span>Masuk Google</span>
+              {mobileMenuOpen ? <X className="w-5 h-5" /> : <Menu className="w-5 h-5" />}
             </button>
-          )}
 
-          <button
-            type="button"
-            onClick={() => {
-              setEditingPayload(null);
-              setWizardOpen(true);
-            }}
-            className="inline-flex items-center gap-2 px-4 py-2 rounded-xl bg-[#1E3A8A] text-white text-xs sm:text-sm font-semibold hover:bg-[#172E6E] active:scale-[0.99] transition-all whitespace-nowrap shrink-0 cursor-pointer shadow-xs"
-          >
-            <Plus className="w-4 h-4" />
-            <span>Input / Konfigurasi Assy</span>
-          </button>
+            {/* Clean Japanese Precision Engineering Mark */}
+            <div
+              className="hidden sm:flex w-8 h-8 rounded-xl bg-[#1E3A8A] text-white items-center justify-center shrink-0"
+              aria-hidden="true"
+            >
+              <svg viewBox="0 0 24 24" className="w-4 h-4" fill="none" stroke="currentColor" strokeWidth="2">
+                <rect x="4" y="4" width="16" height="16" rx="3" strokeOpacity="0.45" />
+                <path d="M8 9h8M8 12h5M8 15h8" strokeLinecap="round" />
+                <circle cx="16.5" cy="12" r="1.25" fill="currentColor" stroke="none" />
+              </svg>
+            </div>
+
+            <span className="text-base sm:text-[17px] font-bold tracking-tight text-slate-900 whitespace-nowrap truncate">
+              STD / UMH Wire Harness Studio
+            </span>
+          </div>
+
+          <div className="flex items-center gap-2.5 shrink-0">
+            {authUser ? (
+              <div className="inline-flex items-center rounded-xl bg-white border border-slate-200 divide-x divide-slate-200 overflow-hidden">
+                <div className="hidden md:flex items-center gap-2 px-3 py-2 text-xs bg-slate-50/70">
+                  <Cloud className="w-3.5 h-3.5 text-[#047857] shrink-0" />
+                  <span className="font-semibold text-slate-800 max-w-[150px] truncate">
+                    {authUser.displayName || authUser.email}
+                  </span>
+                </div>
+                <button
+                  type="button"
+                  disabled={authBusy}
+                  onClick={handleGoogleSignOut}
+                  className="inline-flex items-center gap-1.5 px-3 py-2 text-xs font-semibold text-slate-700 hover:bg-slate-50 hover:text-slate-900 transition-colors cursor-pointer whitespace-nowrap"
+                >
+                  <LogOut className="w-3.5 h-3.5" />
+                  <span className="hidden sm:inline">Keluar</span>
+                </button>
+              </div>
+            ) : (
+              <button
+                type="button"
+                disabled={authBusy || !authReady}
+                onClick={handleGoogleSignIn}
+                className="inline-flex items-center gap-1.5 px-3.5 py-2 rounded-xl bg-white border border-slate-200 text-xs font-semibold text-slate-800 hover:bg-slate-50 transition-colors cursor-pointer whitespace-nowrap"
+              >
+                <LogIn className="w-3.5 h-3.5 text-[#1E3A8A]" />
+                <span>Masuk Google</span>
+              </button>
+            )}
+
+            <button
+              type="button"
+              onClick={() => {
+                setEditingPayload(null);
+                setWizardOpen(true);
+              }}
+              className="inline-flex items-center gap-1.5 px-4 py-2 rounded-xl bg-[#1E3A8A] text-white text-xs sm:text-sm font-semibold hover:bg-[#172E6E] active:scale-[0.99] transition-all whitespace-nowrap shrink-0 cursor-pointer shadow-xs"
+            >
+              <Plus className="w-4 h-4" />
+              <span>Input Assy</span>
+            </button>
+          </div>
         </div>
       </header>
 
@@ -1386,9 +1434,17 @@ export default function App() {
               stdDb={stdDb}
               autoCutList={autoCutList}
               feederList={feederList}
+              masterHistoryCount={
+                masterChangeHistory.filter(
+                  (e) => e.category === 'std_params' || e.category === 'std_matrices'
+                ).length
+              }
               onSaveStdDb={handleSaveStdDb}
+              onCommitStdBulkEdit={handleCommitStdBulkEdit}
+              onOpenMasterHistory={(cat) =>
+                setMasterHistoryModal({ open: true, category: cat })
+              }
               onDeleteCustomDisc={handleDeleteCustomDisc}
-              onResetDefault={handleResetStdDb}
             />
           )}
 
@@ -1396,12 +1452,17 @@ export default function App() {
             <AutoCutFeederView
               autoCutList={autoCutList}
               feederList={feederList}
-              onUpdateAutoCut={handleUpdateAutoCut}
-              onUpdateFeeder={handleUpdateFeeder}
-              onDeleteAutoCutItem={handleDeleteAutoCutItem}
-              onDeleteFeederItem={handleDeleteFeederItem}
-              onResetAutoCut={handleResetAutoCut}
-              onResetFeeder={handleResetFeeder}
+              autoCutHistoryCount={
+                masterChangeHistory.filter((e) => e.category === 'auto_cut').length
+              }
+              feederHistoryCount={
+                masterChangeHistory.filter((e) => e.category === 'feeder').length
+              }
+              onOpenMasterHistory={(cat) =>
+                setMasterHistoryModal({ open: true, category: cat })
+              }
+              onCommitAutoCutChange={handleCommitAutoCutChange}
+              onCommitFeederChange={handleCommitFeederChange}
             />
           )}
 
@@ -1485,6 +1546,17 @@ export default function App() {
           onClearAll={handleClearHistory}
           onPrintPdf={(entry) => setPdfHistoryEntry(entry)}
           onClose={() => setHistoryModalOpen(false)}
+        />
+      )}
+
+      {/* Master Data Change History Modal (Parameter STD, Matriks 2D, Auto-Cut & Feeder) */}
+      {masterHistoryModal.open && (
+        <MasterChangeHistoryModal
+          history={masterChangeHistory}
+          initialCategory={masterHistoryModal.category}
+          onDeleteEntry={handleDeleteMasterHistoryEntry}
+          onClearAll={handleClearMasterHistory}
+          onClose={() => setMasterHistoryModal((prev) => ({ ...prev, open: false }))}
         />
       )}
 

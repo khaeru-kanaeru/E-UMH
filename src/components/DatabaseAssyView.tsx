@@ -11,9 +11,16 @@ import {
   Upload,
   X,
 } from 'lucide-react';
-import { getVariantResult } from '../engine/umhCalculator';
+import {
+  getAllowanceModeLabel,
+  getAllowSecForMode,
+  getEffectiveLot,
+  getVariantResult,
+} from '../engine/umhCalculator';
 import { AssyInputPayload, AssyRecord } from '../types/umh';
 import { exportDatabaseAssyExcel } from '../utils/excelExporter';
+
+import { ActionMenu } from './ActionMenu';
 
 interface DatabaseAssyViewProps {
   records: AssyRecord[];
@@ -120,73 +127,83 @@ export function DatabaseAssyView({
   return (
     <div className="space-y-5">
       <div className="glass-surface rounded-2xl p-6">
-        <div className="flex flex-col xl:flex-row xl:items-center justify-between gap-4 pb-5 border-b border-slate-200">
-          <div>
+        {/* Tier 1: Page Title & Primary Actions */}
+        <div className="flex flex-col sm:flex-row sm:items-start justify-between gap-4 pb-5 border-b border-slate-200">
+          <div className="min-w-0">
             <p className="text-[11px] font-semibold text-[#1E3A8A]">
               品番データベース · Riwayat Kalkulasi
             </p>
             <h1 className="text-xl font-bold text-slate-900 mt-0.5">Database Assy</h1>
             <p className="text-xs text-slate-500 mt-0.5">
               {isCloudActive
-                ? 'Setiap perubahan langsung tersimpan ke server Firebase. Data yang dihapus dipindahkan ke Recycle Bin agar mudah di-restore.'
-                : 'Tersimpan di browser lokal. Masuk Google agar semua perubahan & Recycle Bin tersinkron langsung ke server Firebase.'}
+                ? 'Tersimpan langsung ke server Firebase · Data terhapus dipindahkan ke Recycle Bin.'
+                : 'Tersimpan di browser lokal · Masuk Google untuk sinkronisasi langsung ke Firebase.'}
             </p>
           </div>
 
-          <div className="flex flex-wrap items-center gap-2.5">
-            <div className="relative">
-              <Search className="w-4 h-4 text-slate-400 absolute left-3 top-1/2 -translate-y-1/2 pointer-events-none" />
-              <input
-                type="text"
-                value={searchQuery}
-                onChange={(e) => setSearchQuery(e.target.value)}
-                placeholder="Cari Assy No / Customer..."
-                className="pl-9 pr-3 py-2 text-sm bg-slate-50 border border-slate-200 rounded-xl focus:bg-white focus:outline-none focus:ring-2 focus:ring-[#1E3A8A]/20 focus:border-[#1E3A8A] w-56 transition-colors"
-              />
-            </div>
-
+          <div className="flex items-center gap-2 shrink-0">
             {records.length > 0 && (
               <button
                 type="button"
                 onClick={onOpenRefreshModal}
-                className={`inline-flex items-center gap-2 px-3.5 py-2 rounded-xl text-xs font-semibold transition-colors whitespace-nowrap shrink-0 cursor-pointer ${
+                className={`inline-flex items-center gap-1.5 px-3.5 py-2 rounded-xl text-xs font-semibold transition-colors whitespace-nowrap shrink-0 cursor-pointer ${
                   hasPendingMasterChanges
                     ? 'bg-[#047857] text-white hover:bg-[#065F46] shadow-xs'
                     : 'bg-white border border-slate-200 text-slate-800 hover:bg-slate-50'
                 }`}
               >
                 <RefreshCw className="w-3.5 h-3.5" />
-                <span>Refresh UMH on Database Assy</span>
+                <span>Refresh UMH</span>
               </button>
             )}
 
             <button
               type="button"
-              onClick={onOpenHistoryModal}
-              className="inline-flex items-center gap-2 px-3.5 py-2 rounded-xl bg-white border border-slate-200 text-xs font-semibold text-slate-800 hover:bg-slate-50 transition-colors whitespace-nowrap shrink-0 cursor-pointer"
+              onClick={onStartWizard}
+              className="inline-flex items-center gap-1.5 px-4 py-2 rounded-xl bg-[#1E3A8A] text-white text-xs font-semibold hover:bg-[#172E6E] transition-colors whitespace-nowrap shrink-0 cursor-pointer shadow-xs"
             >
-              <History className="w-3.5 h-3.5 text-[#1E3A8A]" />
-              <span>
-                Riwayat Refresh{refreshHistoryCount > 0 ? ` (${refreshHistoryCount})` : ''}
-              </span>
+              <Plus className="w-3.5 h-3.5" />
+              <span>Assy Baru</span>
             </button>
+          </div>
+        </div>
 
-            <button
-              type="button"
-              onClick={onOpenRecycleBin}
-              className="inline-flex items-center gap-2 px-3.5 py-2 rounded-xl bg-white border border-slate-200 text-xs font-semibold text-slate-800 hover:bg-slate-50 transition-colors whitespace-nowrap shrink-0 cursor-pointer"
-            >
-              <Trash2 className="w-3.5 h-3.5 text-slate-600" />
-              <span>
-                Recycle Bin{recycleBinCount > 0 ? ` (${recycleBinCount})` : ''}
-              </span>
-            </button>
+        {/* Tier 2: Search & Secondary Utility Bar */}
+        <div className="flex flex-col md:flex-row md:items-center justify-between gap-3 pt-4">
+          <div className="flex items-center gap-3 min-w-0 flex-1">
+            <div className="relative w-full md:w-72">
+              <Search className="w-4 h-4 text-slate-400 absolute left-3 top-1/2 -translate-y-1/2 pointer-events-none" />
+              <input
+                type="text"
+                value={searchQuery}
+                onChange={(e) => setSearchQuery(e.target.value)}
+                placeholder="Cari Assy No atau Customer..."
+                className="w-full pl-9 pr-8 py-2 text-xs font-medium bg-slate-50 border border-slate-200 rounded-xl focus:bg-white focus:outline-none focus:ring-2 focus:ring-[#1E3A8A]/20 focus:border-[#1E3A8A] transition-colors"
+              />
+              {searchQuery && (
+                <button
+                  type="button"
+                  onClick={() => setSearchQuery('')}
+                  className="absolute right-2.5 top-1/2 -translate-y-1/2 text-slate-400 hover:text-slate-700 cursor-pointer"
+                  aria-label="Hapus pencarian"
+                >
+                  <X className="w-3.5 h-3.5" />
+                </button>
+              )}
+            </div>
+            <span className="hidden sm:inline text-xs text-slate-500 font-mono-num whitespace-nowrap shrink-0">
+              {searchQuery.trim()
+                ? `${filteredRecords.length} / ${records.length} Assy`
+                : `${records.length} Assy`}
+            </span>
+          </div>
 
+          <div className="flex items-center gap-2 shrink-0">
             <button
               type="button"
               disabled={filteredRecords.length === 0}
               onClick={handleExportExcel}
-              className="inline-flex items-center gap-2 px-3.5 py-2 rounded-xl bg-white border border-slate-200 text-xs font-semibold text-slate-800 hover:bg-emerald-50 hover:border-emerald-300 hover:text-[#047857] disabled:opacity-50 disabled:cursor-not-allowed transition-colors whitespace-nowrap shrink-0 cursor-pointer"
+              className="inline-flex items-center gap-1.5 px-3.5 py-2 rounded-xl bg-white border border-slate-200 text-xs font-semibold text-slate-800 hover:bg-emerald-50 hover:border-emerald-300 hover:text-[#047857] disabled:opacity-50 disabled:cursor-not-allowed transition-colors whitespace-nowrap shrink-0 cursor-pointer"
             >
               <FileSpreadsheet className="w-3.5 h-3.5 text-[#047857]" />
               <span>
@@ -199,21 +216,48 @@ export function DatabaseAssyView({
 
             <button
               type="button"
-              onClick={handleBackupJson}
-              className="inline-flex items-center gap-2 px-3.5 py-2 rounded-xl bg-white border border-slate-200 text-xs font-semibold text-slate-700 hover:bg-slate-50 transition-colors whitespace-nowrap shrink-0 cursor-pointer"
+              onClick={onOpenHistoryModal}
+              className="inline-flex items-center gap-1.5 px-3.5 py-2 rounded-xl bg-white border border-slate-200 text-xs font-semibold text-slate-700 hover:bg-slate-50 hover:text-slate-900 transition-colors whitespace-nowrap shrink-0 cursor-pointer"
             >
-              <Download className="w-3.5 h-3.5" />
-              <span>Backup JSON</span>
+              <History className="w-3.5 h-3.5 text-[#1E3A8A]" />
+              <span>Riwayat Refresh</span>
+              {refreshHistoryCount > 0 && (
+                <span className="font-mono-num text-[11px] text-slate-500">
+                  · {refreshHistoryCount}
+                </span>
+              )}
             </button>
 
-            <button
-              type="button"
-              onClick={() => fileInputRef.current?.click()}
-              className="inline-flex items-center gap-2 px-3.5 py-2 rounded-xl bg-white border border-slate-200 text-xs font-semibold text-slate-700 hover:bg-slate-50 transition-colors whitespace-nowrap shrink-0 cursor-pointer"
-            >
-              <Upload className="w-3.5 h-3.5" />
-              <span>Restore JSON</span>
-            </button>
+            <ActionMenu
+              label="Lainnya"
+              ariaLabel="Opsi backup, restore, dan recycle bin"
+              items={[
+                {
+                  id: 'backup_json',
+                  label: 'Backup JSON',
+                  description: 'Unduh cadangan seluruh data Assy',
+                  icon: Download,
+                  onClick: handleBackupJson,
+                },
+                {
+                  id: 'restore_json',
+                  label: 'Restore JSON',
+                  description: 'Pulihkan data dari file cadangan',
+                  icon: Upload,
+                  onClick: () => fileInputRef.current?.click(),
+                },
+                {
+                  id: 'recycle_bin',
+                  label: 'Buka Recycle Bin',
+                  description: 'Lihat & pulihkan data terhapus',
+                  icon: Trash2,
+                  count: recycleBinCount,
+                  dividerBefore: true,
+                  onClick: onOpenRecycleBin,
+                },
+              ]}
+            />
+
             <input
               ref={fileInputRef}
               type="file"
@@ -221,15 +265,6 @@ export function DatabaseAssyView({
               onChange={handleRestoreJson}
               className="hidden"
             />
-
-            <button
-              type="button"
-              onClick={onStartWizard}
-              className="inline-flex items-center gap-1.5 px-4 py-2 rounded-xl bg-[#1E3A8A] text-white text-xs font-semibold hover:bg-[#172E6E] transition-colors whitespace-nowrap shrink-0 cursor-pointer"
-            >
-              <Plus className="w-3.5 h-3.5" />
-              <span>Assy Baru</span>
-            </button>
           </div>
         </div>
 
@@ -312,15 +347,19 @@ export function DatabaseAssyView({
                     const regCalc = getVariantResult(rec, 'reg');
                     const smvCalc = getVariantResult(rec, 'smv');
                     const regStdSec = regCalc.totalBaseSec;
-                    const regAllowSec =
-                      rec.params.allowanceMode === 'by_process'
-                        ? regCalc.totalAllowByProcessSec
-                        : regCalc.totalAllowByFinalSec;
+                    const regAllowSec = getAllowSecForMode(
+                      rec.params.allowanceMode,
+                      regCalc.totalBaseSec,
+                      regCalc.totalAllowByProcessSec,
+                      regCalc.totalAllowByFinalSec
+                    );
                     const smvStdSec = smvCalc.totalBaseSec;
-                    const smvAllowSec =
-                      rec.params.allowanceMode === 'by_process'
-                        ? smvCalc.totalAllowByProcessSec
-                        : smvCalc.totalAllowByFinalSec;
+                    const smvAllowSec = getAllowSecForMode(
+                      rec.params.allowanceMode,
+                      smvCalc.totalBaseSec,
+                      smvCalc.totalAllowByProcessSec,
+                      smvCalc.totalAllowByFinalSec
+                    );
                     const isConfirming = confirmDeleteId === rec.id;
 
                     return (
@@ -334,8 +373,15 @@ export function DatabaseAssyView({
                         <td className="py-3 px-4 text-slate-700">
                           <div className="font-medium text-slate-900">{rec.params.customer || '-'}</div>
                           <div className="text-xs text-slate-500">
-                            {rec.params.allowanceMode === 'by_process' ? 'By Proses' : 'By Hasil Akhir'} · PFD{' '}
-                            <span className="font-mono-num">{rec.params.pfdAllowancePct}%</span>
+                            {getAllowanceModeLabel(rec.params.allowanceMode, 'short')}
+                            {rec.params.allowanceMode !== 'none' && (
+                              <>
+                                {' '}· PFD{' '}
+                                <span className="font-mono-num">{rec.params.pfdAllowancePct}%</span>
+                              </>
+                            )}{' '}
+                            · LOT{' '}
+                            <span className="font-mono-num">{getEffectiveLot(rec.params.lot)}</span>
                           </div>
                         </td>
                         <td className="py-3 px-4 text-right font-mono-num text-slate-700">

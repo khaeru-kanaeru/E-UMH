@@ -9,10 +9,13 @@ import {
   Disc,
   Download,
   FileCode2,
+  FileSpreadsheet,
   Grid3X3,
+  History,
+  Pencil,
   Plus,
   RotateCcw,
-  Save,
+  Search,
   ShieldCheck,
   Trash2,
   Upload,
@@ -20,10 +23,13 @@ import {
   XCircle,
 } from 'lucide-react';
 import { DEFAULT_PROCESS_DISCS, createEmptyDiscTemplateCode } from '../data/defaultProcessDiscs';
+import { DEFAULT_STD_DATABASE } from '../data/defaultStdDb';
 import {
   AutoCutItem,
   DiscValidationResult,
   FeederItem,
+  MasterChangeHistoryEntry,
+  MasterChangeSource,
   ProcessLogicDisc,
   StdDatabase,
 } from '../types/umh';
@@ -35,31 +41,41 @@ import {
   serializeDiscToJsonFile,
   validateProcessDisc,
 } from '../utils/discEngine';
+import {
+  STD_AC_ROW_LABELS,
+  STD_COL_LABELS_4,
+  STD_COL_LABELS_7,
+  STD_MC_ROW_LABELS,
+  STD_SA_ROW_LABELS,
+} from '../utils/masterDiffEngine';
+import {
+  exportStdParamsTemplateXlsx,
+  parseStdParamsExcelFile,
+} from '../utils/stdExcelHelper';
+import { ActionMenu } from './ActionMenu';
 import { LogicDiscModal } from './LogicDiscModal';
+import { StdBulkEditModal } from './StdBulkEditModal';
 
 interface StdParamsViewProps {
   stdDb: StdDatabase;
   autoCutList: AutoCutItem[];
   feederList: FeederItem[];
+  masterHistoryCount: number;
   onSaveStdDb: (db: StdDatabase) => void;
+  onCommitStdBulkEdit: (nextDb: StdDatabase, entries: MasterChangeHistoryEntry[]) => void;
+  onOpenMasterHistory: (cat: 'std_params' | 'std_matrices') => void;
   onDeleteCustomDisc?: (disc: ProcessLogicDisc, nextDb: StdDatabase) => void;
-  onResetDefault: () => StdDatabase;
 }
-
-const COL_LABELS_7 = ['0~1000', '1001~2000', '2001~3000', '3001~4000', '4001~5000', '5001~6000', '6001~'];
-const COL_LABELS_4 = ['0~1000', '1001~2000', '2001~5000', '5001~'];
-
-const AC_ROW_LABELS = ['LOT 1~10', 'LOT 11~20', 'LOT 21~30', 'LOT 31~40', 'LOT 41~50', 'LOT 51~'];
-const SA_ROW_LABELS = ['LOT 1~5', 'LOT 6~10', 'LOT 11~20', 'LOT 21~30', 'LOT 31~40', 'LOT 41~50', 'LOT 51~'];
-const MC_ROW_LABELS = ['LOT 1~3', 'LOT 4~5', 'LOT 6~10', 'LOT 11~20', 'LOT 21~30', 'LOT 31~40', 'LOT 41~50', 'LOT 51~'];
 
 export function StdParamsView({
   stdDb,
   autoCutList,
   feederList,
+  masterHistoryCount,
   onSaveStdDb,
+  onCommitStdBulkEdit,
+  onOpenMasterHistory,
   onDeleteCustomDisc,
-  onResetDefault,
 }: StdParamsViewProps) {
   const [draft, setDraft] = useState<StdDatabase>(() => ({
     ...structuredClone(stdDb),
@@ -67,12 +83,23 @@ export function StdParamsView({
   }));
   const [viewMode, setViewMode] = useState<'substeps' | 'matrices' | 'discs'>('substeps');
   const [selectedSheet, setSelectedSheet] = useState<string>('ALL');
+  const [searchParam, setSearchParam] = useState<string>('');
   const [selectedMatrix, setSelectedMatrix] = useState<'acMatrix' | 'saMatrix' | 'mcMatrix'>('acMatrix');
-  const [confirmReset, setConfirmReset] = useState(false);
   const [confirmResetDiscs, setConfirmResetDiscs] = useState(false);
   const [toast, setToast] = useState<string | null>(null);
   const [discError, setDiscError] = useState<string | null>(null);
   const [showFormatGuide, setShowFormatGuide] = useState(false);
+  const [excelUploading, setExcelUploading] = useState(false);
+
+  // Floating Bulk Edit / Excel Confirm / Reset Confirm Modal state
+  const [bulkModal, setBulkModal] = useState<{
+    initialTab: 'substeps' | 'matrices';
+    initialStage: 'edit' | 'confirm';
+    initialDraftDb?: StdDatabase;
+    source: MasterChangeSource;
+    sourceFileName?: string;
+    detectedSheets?: string[];
+  } | null>(null);
 
   // Logic Disc Inspector / Validator Modal state
   const [editingDiscModal, setEditingDiscModal] = useState<{
@@ -88,6 +115,7 @@ export function StdParamsView({
     results: { raw: Partial<ProcessLogicDisc>; validation: DiscValidationResult }[];
   } | null>(null);
 
+  const stdExcelInputRef = useRef<HTMLInputElement>(null);
   const globalDiscImportRef = useRef<HTMLInputElement>(null);
   const rowDiscImportRef = useRef<HTMLInputElement>(null);
   const [rowImportTargetId, setRowImportTargetId] = useState<number | null>(null);
@@ -101,7 +129,7 @@ export function StdParamsView({
 
   const showToast = (msg: string) => {
     setToast(msg);
-    setTimeout(() => setToast(null), 3500);
+    setTimeout(() => setToast(null), 4000);
   };
 
   const sheets = useMemo(
@@ -110,9 +138,19 @@ export function StdParamsView({
   );
 
   const filteredParams = useMemo(() => {
-    if (selectedSheet === 'ALL') return draft.params;
-    return draft.params.filter((p) => p.sheet === selectedSheet);
-  }, [draft.params, selectedSheet]);
+    const q = searchParam.trim().toLowerCase();
+    return draft.params.filter((p) => {
+      if (selectedSheet !== 'ALL' && p.sheet !== selectedSheet) return false;
+      if (!q) return true;
+      return (
+        p.name.toLowerCase().includes(q) ||
+        p.sheet.toLowerCase().includes(q) ||
+        p.stage.toLowerCase().includes(q) ||
+        p.basis.toLowerCase().includes(q) ||
+        p.id.toLowerCase().includes(q)
+      );
+    });
+  }, [draft.params, selectedSheet, searchParam]);
 
   const sortedDiscs = useMemo(
     () =>
@@ -122,46 +160,74 @@ export function StdParamsView({
     [draft.processDiscs]
   );
 
-  const handleParamChange = (id: string, val: string) => {
-    const num = parseFloat(val);
-    setDraft((prev) => ({
-      ...prev,
-      params: prev.params.map((p) =>
-        p.id === id ? { ...p, val: Number.isFinite(num) ? num : 0 } : p
-      ),
-    }));
-  };
-
-  const handleMatrixCellChange = (
-    matrixKey: 'acMatrix' | 'saMatrix' | 'mcMatrix',
-    rIdx: number,
-    cIdx: number,
-    val: string
-  ) => {
-    const num = parseFloat(val);
-    setDraft((prev) => ({
-      ...prev,
-      [matrixKey]: prev[matrixKey].map((row, ri) =>
-        ri === rIdx
-          ? row.map((cell, ci) => (ci === cIdx ? (Number.isFinite(num) ? num : 0) : cell))
-          : row
-      ),
-    }));
-  };
-
-  const handleSave = () => {
-    onSaveStdDb(draft);
-    showToast('Seluruh Database STD, Matriks 2D & Logic Disc tersimpan!');
-  };
-
-  const handleConfirmReset = () => {
-    const fresh = onResetDefault();
-    setDraft({
-      ...structuredClone(fresh),
-      processDiscs: structuredClone(fresh.processDiscs ?? DEFAULT_PROCESS_DISCS),
+  const handleOpenManualEdit = () => {
+    setDiscError(null);
+    setBulkModal({
+      initialTab: viewMode === 'matrices' ? 'matrices' : 'substeps',
+      initialStage: 'edit',
+      source: 'manual_edit',
     });
-    setConfirmReset(false);
-    showToast('STD, Matriks 2D & Logic Disc di-reset ke default tervalidasi.');
+  };
+
+  const handleOpenResetConfirm = () => {
+    setDiscError(null);
+    const defaultTarget: StdDatabase = {
+      ...structuredClone(DEFAULT_STD_DATABASE),
+      processDiscs: structuredClone(draft.processDiscs ?? DEFAULT_PROCESS_DISCS),
+    };
+    setBulkModal({
+      initialTab: viewMode === 'matrices' ? 'matrices' : 'substeps',
+      initialStage: 'confirm',
+      initialDraftDb: defaultTarget,
+      source: 'reset_default',
+    });
+  };
+
+  const handleStdExcelFileSelect = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    e.target.value = '';
+    if (!file) return;
+
+    setExcelUploading(true);
+    setDiscError(null);
+    try {
+      const parsed = await parseStdParamsExcelFile(file, draft);
+      if (parsed.matchedParamsRows === 0 && parsed.matchedMatricesCount === 0) {
+        setDiscError(
+          `File "${file.name}" tidak memuat sheet atau kolom Parameter STD / Matriks 2D yang dikenali. Silakan unduh Template .xlsx terlebih dahulu.`
+        );
+        return;
+      }
+      if (parsed.paramChanges.length === 0 && parsed.matrixChanges.length === 0) {
+        showToast(
+          `File "${file.name}" terbaca (${parsed.detectedSheets.join(', ')}), namun seluruh nilainya sudah sama dengan database saat ini.`
+        );
+        return;
+      }
+      setBulkModal({
+        initialTab: parsed.paramChanges.length > 0 ? 'substeps' : 'matrices',
+        initialStage: 'confirm',
+        initialDraftDb: parsed.nextDb,
+        source: 'excel_upload',
+        sourceFileName: file.name,
+        detectedSheets: parsed.detectedSheets,
+      });
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      setDiscError(`Gagal membaca Excel "${file.name}": ${msg}`);
+    } finally {
+      setExcelUploading(false);
+    }
+  };
+
+  const handleCommitBulk = (nextDb: StdDatabase, entries: MasterChangeHistoryEntry[]) => {
+    onCommitStdBulkEdit(nextDb, entries);
+    setBulkModal(null);
+    const totalChanged = entries.reduce((sum, e) => sum + e.changes.length, 0);
+    const pic = entries[0]?.responsibleName || 'PIC';
+    showToast(
+      `Perubahan Parameter STD (${totalChanged} item) disimpan oleh ${pic} & tercatat di Riwayat Perubahan.`
+    );
   };
 
   const downloadFile = (content: string, filename: string, mime: string) => {
@@ -352,29 +418,30 @@ export function StdParamsView({
     selectedMatrix === 'acMatrix'
       ? {
           title: 'Matriks 2D Autocutting (Detik/CCT: LOT × Panjang Kabel)',
-          rowLabels: AC_ROW_LABELS,
-          colLabels: COL_LABELS_7,
+          rowLabels: STD_AC_ROW_LABELS,
+          colLabels: STD_COL_LABELS_7,
           data: draft.acMatrix,
         }
       : selectedMatrix === 'saMatrix'
       ? {
           title: 'Matriks 2D Semi-autocutting (Detik/CCT: LOT × Panjang Kabel)',
-          rowLabels: SA_ROW_LABELS,
-          colLabels: COL_LABELS_7,
+          rowLabels: STD_SA_ROW_LABELS,
+          colLabels: STD_COL_LABELS_7,
           data: draft.saMatrix,
         }
       : {
           title: 'Matriks 2D Manual-（Air）cutting (Detik/CCT: LOT × Panjang Kabel)',
-          rowLabels: MC_ROW_LABELS,
-          colLabels: COL_LABELS_4,
+          rowLabels: STD_MC_ROW_LABELS,
+          colLabels: STD_COL_LABELS_4,
           data: draft.mcMatrix,
         };
 
   return (
     <div className="space-y-5">
       <div className="glass-surface rounded-2xl p-6">
-        <div className="flex flex-col xl:flex-row xl:items-center justify-between gap-4 pb-5 border-b border-slate-200">
-          <div>
+        {/* Tier 1: Page Title & Bulk Edit / History / Excel Actions */}
+        <div className="flex flex-col sm:flex-row sm:items-start justify-between gap-4 pb-5 border-b border-slate-200">
+          <div className="min-w-0">
             <p className="text-[11px] font-semibold text-[#1E3A8A]">
               標準時間マスタ · Konstanta, Matriks 2D &amp; Logic Disc
             </p>
@@ -382,87 +449,244 @@ export function StdParamsView({
               Database Parameter STD (Time by Second)
             </h1>
             <p className="text-xs text-slate-500 mt-0.5">
-              Kelola konstanta detik sub-step, matriks 2D, serta modul Logic Disc per sub-proses
-              secara bongkar-pasang.
+              Tabel tampilan terkunci (read-only). Klik <strong>Edit Data</strong> untuk ubah massal sekaligus atau unggah file Excel STD.
             </p>
           </div>
 
-          <div className="flex flex-wrap items-center gap-2.5">
-            <div className="inline-flex flex-wrap items-center p-1 rounded-xl bg-slate-100 border border-slate-200">
-              <button
-                type="button"
-                onClick={() => setViewMode('substeps')}
-                className={`px-3 py-1.5 rounded-lg text-xs font-semibold transition-all cursor-pointer whitespace-nowrap ${
-                  viewMode === 'substeps'
-                    ? 'bg-white text-slate-900 shadow-xs'
-                    : 'text-slate-600 hover:text-slate-900'
-                }`}
-              >
-                Parameter Sub-Step ({draft.params.length})
-              </button>
-              <button
-                type="button"
-                onClick={() => setViewMode('matrices')}
-                className={`inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-semibold transition-all cursor-pointer whitespace-nowrap ${
-                  viewMode === 'matrices'
-                    ? 'bg-white text-slate-900 shadow-xs'
-                    : 'text-slate-600 hover:text-slate-900'
-                }`}
-              >
-                <Grid3X3 className="w-3.5 h-3.5" />
-                <span>Matriks 2D (3)</span>
-              </button>
-              <button
-                type="button"
-                onClick={() => setViewMode('discs')}
-                className={`inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-semibold transition-all cursor-pointer whitespace-nowrap ${
-                  viewMode === 'discs'
-                    ? 'bg-white text-slate-900 shadow-xs'
-                    : 'text-slate-600 hover:text-slate-900'
-                }`}
-              >
-                <Disc className="w-3.5 h-3.5 text-[#1E3A8A]" />
-                <span>Logic Disc Sub-Proses ({sortedDiscs.length})</span>
-              </button>
-            </div>
-
-            {confirmReset ? (
-              <div className="inline-flex items-center gap-1.5">
-                <button
-                  type="button"
-                  onClick={handleConfirmReset}
-                  className="px-3 py-2 rounded-xl bg-red-600 text-white text-xs font-semibold hover:bg-red-700 cursor-pointer"
-                >
-                  Konfirmasi Reset
-                </button>
-                <button
-                  type="button"
-                  onClick={() => setConfirmReset(false)}
-                  className="px-3 py-2 rounded-xl bg-slate-200 text-slate-700 text-xs font-medium hover:bg-slate-300 cursor-pointer"
-                >
-                  Batal
-                </button>
-              </div>
-            ) : (
-              <button
-                type="button"
-                onClick={() => setConfirmReset(true)}
-                className="inline-flex items-center gap-1.5 px-3.5 py-2 rounded-xl bg-white border border-slate-200 text-xs font-semibold text-slate-700 hover:bg-slate-50 transition-colors cursor-pointer whitespace-nowrap"
-              >
-                <RotateCcw className="w-3.5 h-3.5" />
-                <span>Reset Default</span>
-              </button>
-            )}
+          <div className="flex items-center gap-2 shrink-0">
+            <input
+              ref={stdExcelInputRef}
+              type="file"
+              accept=".xlsx,.xls,.csv"
+              onChange={handleStdExcelFileSelect}
+              className="hidden"
+            />
 
             <button
               type="button"
-              onClick={handleSave}
-              className="inline-flex items-center gap-1.5 px-4 py-2 rounded-xl bg-[#1E3A8A] text-white text-xs font-semibold hover:bg-[#172E6E] transition-colors cursor-pointer whitespace-nowrap"
+              onClick={() =>
+                onOpenMasterHistory(viewMode === 'matrices' ? 'std_matrices' : 'std_params')
+              }
+              className="inline-flex items-center gap-1.5 px-3.5 py-2 rounded-xl bg-white border border-slate-200 text-xs font-semibold text-slate-700 hover:bg-slate-50 transition-colors cursor-pointer whitespace-nowrap shrink-0"
             >
-              <Save className="w-3.5 h-3.5" />
-              <span>Simpan STD</span>
+              <History className="w-3.5 h-3.5 text-[#1E3A8A]" />
+              <span>
+                Riwayat
+                {masterHistoryCount > 0 ? ` (${masterHistoryCount})` : ''}
+              </span>
+            </button>
+
+            <button
+              type="button"
+              onClick={handleOpenManualEdit}
+              className="inline-flex items-center gap-1.5 px-4 py-2 rounded-xl bg-[#1E3A8A] text-white text-xs font-semibold hover:bg-[#172E6E] transition-colors cursor-pointer whitespace-nowrap shrink-0 shadow-xs"
+            >
+              <Pencil className="w-3.5 h-3.5" />
+              <span>Edit Data</span>
+            </button>
+
+            <ActionMenu
+              compact
+              ariaLabel="Opsi Parameter STD"
+              items={[
+                {
+                  id: 'upload_std_excel',
+                  label: excelUploading ? 'Membaca Excel...' : 'Upload Excel STD (.xlsx)',
+                  description: 'Perbarui Sub-Step & Matriks 2D sekaligus',
+                  icon: Upload,
+                  iconClassName: 'text-[#1E3A8A]',
+                  onClick: () => stdExcelInputRef.current?.click(),
+                },
+                {
+                  id: 'download_std_template',
+                  label: 'Unduh Template .xlsx',
+                  description: '4 sheet: Sub-Step + 3 Matriks 2D saat ini',
+                  icon: FileSpreadsheet,
+                  iconClassName: 'text-[#047857]',
+                  onClick: () => exportStdParamsTemplateXlsx(draft),
+                },
+                {
+                  id: 'reset_std_default',
+                  label: 'Reset ke Default',
+                  description: 'Bandingkan & kembalikan nilai standar',
+                  icon: RotateCcw,
+                  danger: true,
+                  dividerBefore: true,
+                  onClick: handleOpenResetConfirm,
+                },
+              ]}
+            />
+          </div>
+        </div>
+
+        {/* Tier 2: View Switcher + Contextual Right Controls */}
+        <div className="flex flex-col lg:flex-row lg:items-center justify-between gap-3 pt-4">
+          <div className="inline-flex items-center p-1 rounded-xl bg-slate-100 border border-slate-200 self-start overflow-x-auto max-w-full">
+            <button
+              type="button"
+              onClick={() => setViewMode('substeps')}
+              className={`px-3 py-1.5 rounded-lg text-xs font-semibold transition-all cursor-pointer whitespace-nowrap ${
+                viewMode === 'substeps'
+                  ? 'bg-white text-slate-900 shadow-xs'
+                  : 'text-slate-600 hover:text-slate-900'
+              }`}
+            >
+              Sub-Step <span className="font-mono-num opacity-70">({draft.params.length})</span>
+            </button>
+            <button
+              type="button"
+              onClick={() => setViewMode('matrices')}
+              className={`inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-semibold transition-all cursor-pointer whitespace-nowrap ${
+                viewMode === 'matrices'
+                  ? 'bg-white text-slate-900 shadow-xs'
+                  : 'text-slate-600 hover:text-slate-900'
+              }`}
+            >
+              <Grid3X3 className="w-3.5 h-3.5" />
+              <span>
+                Matriks 2D <span className="font-mono-num opacity-70">(3)</span>
+              </span>
+            </button>
+            <button
+              type="button"
+              onClick={() => setViewMode('discs')}
+              className={`inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-semibold transition-all cursor-pointer whitespace-nowrap ${
+                viewMode === 'discs'
+                  ? 'bg-white text-slate-900 shadow-xs'
+                  : 'text-slate-600 hover:text-slate-900'
+              }`}
+            >
+              <Disc className="w-3.5 h-3.5 text-[#1E3A8A]" />
+              <span>
+                Logic Disc <span className="font-mono-num opacity-70">({sortedDiscs.length})</span>
+              </span>
             </button>
           </div>
+
+          {/* Contextual Controls for Sub-Step Tab */}
+          {viewMode === 'substeps' && (
+            <div className="flex flex-wrap items-center gap-2.5 shrink-0">
+              <div className="relative">
+                <Search className="w-3.5 h-3.5 text-slate-400 absolute left-3 top-1/2 -translate-y-1/2" />
+                <input
+                  type="text"
+                  value={searchParam}
+                  onChange={(e) => setSearchParam(e.target.value)}
+                  placeholder="Cari parameter..."
+                  className="w-48 sm:w-56 pl-8 pr-3 py-2 bg-slate-50 border border-slate-200 rounded-xl text-xs text-slate-900 focus:bg-white focus:outline-none focus:ring-2 focus:ring-[#1E3A8A]/20"
+                />
+              </div>
+              <select
+                value={selectedSheet}
+                onChange={(e) => setSelectedSheet(e.target.value)}
+                aria-label="Filter Sheet Proses"
+                className="px-3 py-2 bg-slate-50 border border-slate-200 rounded-xl text-xs font-semibold text-slate-900 focus:bg-white focus:outline-none focus:ring-2 focus:ring-[#1E3A8A]/20"
+              >
+                <option value="ALL">Semua Sheet Proses</option>
+                {sheets.map((s) => (
+                  <option key={s} value={s}>
+                    {s}
+                  </option>
+                ))}
+              </select>
+              <span className="text-xs text-slate-500 font-mono-num whitespace-nowrap">
+                {filteredParams.length} parameter
+              </span>
+            </div>
+          )}
+
+          {/* Contextual Controls for Matrices Tab */}
+          {viewMode === 'matrices' && (
+            <div className="inline-flex items-center p-1 rounded-xl bg-slate-100 border border-slate-200 self-start lg:self-auto">
+              {(
+                [
+                  { key: 'acMatrix', label: 'Autocutting' },
+                  { key: 'saMatrix', label: 'Semi-Auto' },
+                  { key: 'mcMatrix', label: 'Manual-(Air)' },
+                ] as const
+              ).map((m) => (
+                <button
+                  key={m.key}
+                  type="button"
+                  onClick={() => setSelectedMatrix(m.key)}
+                  className={`px-3 py-1.5 rounded-lg text-xs font-semibold transition-all cursor-pointer whitespace-nowrap ${
+                    selectedMatrix === m.key
+                      ? 'bg-white text-slate-900 shadow-xs'
+                      : 'text-slate-600 hover:text-slate-900'
+                  }`}
+                >
+                  {m.label}
+                </button>
+              ))}
+            </div>
+          )}
+
+          {/* Contextual Controls for Logic Disc Tab */}
+          {viewMode === 'discs' && (
+            <div className="flex items-center gap-2 shrink-0">
+              <button
+                type="button"
+                onClick={() => globalDiscImportRef.current?.click()}
+                className="inline-flex items-center gap-1.5 px-3.5 py-2 rounded-xl bg-white border border-slate-200 text-xs font-semibold text-slate-800 hover:bg-slate-50 transition-colors cursor-pointer whitespace-nowrap shrink-0"
+              >
+                <Upload className="w-3.5 h-3.5 text-[#1E3A8A]" />
+                <span>Import Disc</span>
+              </button>
+              <input
+                ref={globalDiscImportRef}
+                type="file"
+                accept=".js,.disc.js,.json,.disc.json,.discs.json"
+                onChange={handleGlobalImportFile}
+                className="hidden"
+              />
+
+              <button
+                type="button"
+                onClick={handleCreateNewDiscSlot}
+                className="inline-flex items-center gap-1.5 px-3.5 py-2 rounded-xl bg-[#047857] text-white text-xs font-semibold hover:bg-[#065F46] transition-colors cursor-pointer whitespace-nowrap shrink-0"
+              >
+                <Plus className="w-3.5 h-3.5" />
+                <span>Sub-Proses Baru</span>
+              </button>
+
+              <ActionMenu
+                label="Lainnya"
+                ariaLabel="Opsi Logic Disc lainnya"
+                items={[
+                  {
+                    id: 'export_all_discs',
+                    label: 'Export Semua Disc (.json)',
+                    description: 'Unduh bundle seluruh sub-proses',
+                    icon: Download,
+                    iconClassName: 'text-[#047857]',
+                    onClick: () =>
+                      downloadFile(
+                        serializeAllDiscsBundle(sortedDiscs),
+                        `UMH_All_Logic_Discs_${new Date().toISOString().slice(0, 10)}.discs.json`,
+                        'application/json;charset=utf-8'
+                      ),
+                  },
+                  {
+                    id: 'toggle_guide',
+                    label: showFormatGuide ? 'Tutup Panduan Format' : 'Panduan Format Disc',
+                    description: `Spesifikasi ${DISC_FORMAT_VERSION}`,
+                    icon: BookOpen,
+                    iconClassName: 'text-[#1E3A8A]',
+                    onClick: () => setShowFormatGuide((v) => !v),
+                  },
+                  {
+                    id: 'reset_all_discs',
+                    label: 'Reset Semua Disc',
+                    description: 'Kembalikan seluruh rumus ke standar',
+                    icon: RotateCcw,
+                    danger: true,
+                    dividerBefore: true,
+                    onClick: () => setConfirmResetDiscs(true),
+                  },
+                ]}
+              />
+            </div>
+          )}
         </div>
 
         {toast && (
@@ -484,30 +708,9 @@ export function StdParamsView({
           </div>
         )}
 
-        {/* TAB 1: PARAMETER SUB-STEP */}
+        {/* TAB 1: PARAMETER SUB-STEP (FIXED READ-ONLY) */}
         {viewMode === 'substeps' && (
-          <div className="mt-5 space-y-4">
-            <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
-              <label className="text-xs font-semibold text-slate-600 flex items-center gap-2">
-                <span>Filter Sheet Proses:</span>
-                <select
-                  value={selectedSheet}
-                  onChange={(e) => setSelectedSheet(e.target.value)}
-                  className="px-3 py-1.5 bg-slate-50 border border-slate-200 rounded-xl text-xs font-semibold text-slate-900 focus:bg-white focus:outline-none focus:ring-2 focus:ring-[#1E3A8A]/20"
-                >
-                  <option value="ALL">Semua Sheet Proses</option>
-                  {sheets.map((s) => (
-                    <option key={s} value={s}>
-                      {s}
-                    </option>
-                  ))}
-                </select>
-              </label>
-              <span className="text-xs text-slate-500 font-mono-num">
-                Menampilkan {filteredParams.length} parameter
-              </span>
-            </div>
-
+          <div className="mt-4">
             <div className="rounded-xl border border-slate-200 bg-white overflow-x-auto">
               <table className="w-full text-left border-collapse">
                 <thead>
@@ -520,63 +723,56 @@ export function StdParamsView({
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-slate-200/70 text-xs">
-                  {filteredParams.map((p) => (
-                    <tr key={p.id} className="hover:bg-slate-50/80 transition-colors">
-                      <td className="py-2.5 px-4 font-semibold text-slate-800">{p.sheet}</td>
-                      <td className="py-2.5 px-4 text-slate-600">{p.stage}</td>
-                      <td className="py-2.5 px-4 text-slate-900 font-medium">{p.name}</td>
-                      <td className="py-2.5 px-4 font-mono-num text-slate-500">{p.basis}</td>
-                      <td className="py-2.5 px-4 text-right">
-                        <input
-                          type="number"
-                          step="any"
-                          value={p.val}
-                          onChange={(e) => handleParamChange(p.id, e.target.value)}
-                          className="w-28 text-right font-mono-num font-semibold px-2.5 py-1.5 bg-slate-50 border border-slate-200 rounded-lg focus:bg-white focus:outline-none focus:ring-2 focus:ring-[#1E3A8A]/20 focus:border-[#1E3A8A]"
-                        />
+                  {filteredParams.length === 0 ? (
+                    <tr>
+                      <td colSpan={5} className="py-8 text-center text-slate-400">
+                        Tidak ada parameter yang cocok dengan pencarian.
                       </td>
                     </tr>
-                  ))}
+                  ) : (
+                    filteredParams.map((p) => (
+                      <tr key={p.id} className="hover:bg-slate-50/80 transition-colors">
+                        <td className="py-2.5 px-4 font-semibold text-slate-800 whitespace-nowrap">
+                          {p.sheet}
+                        </td>
+                        <td className="py-2.5 px-4 text-slate-600 whitespace-nowrap">
+                          {p.stage}
+                        </td>
+                        <td className="py-2.5 px-4 text-slate-900 font-medium">{p.name}</td>
+                        <td className="py-2.5 px-4 font-mono-num text-slate-500 whitespace-nowrap">
+                          {p.basis}
+                        </td>
+                        <td className="py-2.5 px-4 text-right font-mono-num font-bold text-[#1E3A8A] tabular-nums whitespace-nowrap">
+                          {p.val}
+                        </td>
+                      </tr>
+                    ))
+                  )}
                 </tbody>
               </table>
             </div>
           </div>
         )}
 
-        {/* TAB 2: MATRIKS 2D */}
+        {/* TAB 2: MATRIKS 2D (FIXED READ-ONLY) */}
         {viewMode === 'matrices' && (
-          <div className="mt-5 space-y-4">
-            <div className="flex flex-wrap items-center gap-2">
-              {(
-                [
-                  { key: 'acMatrix', label: 'Matriks 2D Autocutting' },
-                  { key: 'saMatrix', label: 'Matriks 2D Semi-autocutting' },
-                  { key: 'mcMatrix', label: 'Matriks 2D Manual-(Air)cutting' },
-                ] as const
-              ).map((m) => (
-                <button
-                  key={m.key}
-                  type="button"
-                  onClick={() => setSelectedMatrix(m.key)}
-                  className={`px-3.5 py-2 rounded-xl text-xs font-semibold border transition-colors cursor-pointer ${
-                    selectedMatrix === m.key
-                      ? 'bg-slate-900 text-white border-slate-900'
-                      : 'bg-white text-slate-700 border-slate-200 hover:bg-slate-50'
-                  }`}
-                >
-                  {m.label}
-                </button>
-              ))}
-            </div>
-
+          <div className="mt-4">
             <div className="rounded-xl border border-slate-200 bg-white overflow-x-auto p-5">
-              <h2 className="text-sm font-bold text-slate-900 mb-3">{matrixMeta.title}</h2>
+              <div className="flex items-center justify-between gap-3 mb-3">
+                <h2 className="text-sm font-bold text-slate-900">{matrixMeta.title}</h2>
+                <span className="text-[11px] text-slate-500">
+                  Klik <strong>Edit Data</strong> untuk mengubah nilai matriks
+                </span>
+              </div>
               <table className="w-full text-left border-collapse">
                 <thead>
                   <tr className="border-b border-slate-200 text-xs font-semibold text-slate-700 bg-slate-50">
                     <th className="py-2.5 px-3 border border-slate-200">Rentang LOT</th>
                     {matrixMeta.colLabels.map((col, ci) => (
-                      <th key={ci} className="py-2.5 px-3 border border-slate-200 text-center font-mono-num">
+                      <th
+                        key={ci}
+                        className="py-2.5 px-3 border border-slate-200 text-center font-mono-num"
+                      >
                         {col} mm
                       </th>
                     ))}
@@ -585,20 +781,15 @@ export function StdParamsView({
                 <tbody>
                   {matrixMeta.rowLabels.map((rowLbl, ri) => (
                     <tr key={ri} className="hover:bg-slate-50/70">
-                      <td className="py-2 px-3 border border-slate-200 text-xs font-semibold text-slate-800 bg-slate-50/80 whitespace-nowrap font-mono-num">
+                      <td className="py-2.5 px-3 border border-slate-200 text-xs font-semibold text-slate-800 bg-slate-50/80 whitespace-nowrap font-mono-num">
                         {rowLbl}
                       </td>
                       {matrixMeta.colLabels.map((_, ci) => (
-                        <td key={ci} className="py-2 px-2 border border-slate-200 text-center">
-                          <input
-                            type="number"
-                            step="any"
-                            value={matrixMeta.data[ri]?.[ci] ?? 0}
-                            onChange={(e) =>
-                              handleMatrixCellChange(selectedMatrix, ri, ci, e.target.value)
-                            }
-                            className="w-20 text-center font-mono-num text-xs font-semibold px-2 py-1.5 bg-slate-50 border border-slate-200 rounded-lg focus:bg-white focus:outline-none focus:ring-2 focus:ring-[#1E3A8A]/20 focus:border-[#1E3A8A]"
-                          />
+                        <td
+                          key={ci}
+                          className="py-2.5 px-3 border border-slate-200 text-center font-mono-num text-xs font-semibold text-slate-900 tabular-nums"
+                        >
+                          {matrixMeta.data[ri]?.[ci] ?? 0}
                         </td>
                       ))}
                     </tr>
@@ -611,103 +802,50 @@ export function StdParamsView({
 
         {/* TAB 3: LOGIC DISC SUB-PROSES (MODULAR PLUG-AND-PLAY) */}
         {viewMode === 'discs' && (
-          <div className="mt-5 space-y-4">
-            {/* Toolbar */}
-            <div className="rounded-xl bg-slate-50 border border-slate-200 p-4 flex flex-col lg:flex-row lg:items-center justify-between gap-3">
-              <div className="space-y-0.5">
-                <h2 className="text-sm font-bold text-slate-900">
-                  Arsitektur Logic Disc Bongkar-Pasang (`{DISC_FORMAT_VERSION}`)
-                </h2>
-                <p className="text-xs text-slate-600">
-                  Setiap sub-proses memiliki disc kode perhitungan (<code>.disc.js</code> /{' '}
-                  <code>.json</code>) terpisah. Edit, export, atau import dengan validasi wajib 5
-                  tahap sebelum diterapkan.
+          <div className="mt-4 space-y-4">
+            {/* Inline Confirm Reset All Discs */}
+            {confirmResetDiscs && (
+              <div className="px-4 py-3 rounded-xl bg-red-50 border border-red-200 flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+                <p className="text-xs font-medium text-red-900">
+                  Reset seluruh Logic Disc ke rumus standar tervalidasi? Perubahan kustom akan
+                  diganti dengan default.
                 </p>
-              </div>
-
-              <div className="flex flex-wrap items-center gap-2 shrink-0">
-                <button
-                  type="button"
-                  onClick={() => setShowFormatGuide((v) => !v)}
-                  className="inline-flex items-center gap-1.5 px-3 py-2 rounded-xl bg-white border border-slate-200 text-xs font-semibold text-slate-700 hover:bg-slate-100 cursor-pointer"
-                >
-                  <BookOpen className="w-3.5 h-3.5 text-[#1E3A8A]" />
-                  <span>Panduan Format Disc</span>
-                  {showFormatGuide ? (
-                    <ChevronUp className="w-3.5 h-3.5" />
-                  ) : (
-                    <ChevronDown className="w-3.5 h-3.5" />
-                  )}
-                </button>
-
-                <button
-                  type="button"
-                  onClick={() => globalDiscImportRef.current?.click()}
-                  className="inline-flex items-center gap-1.5 px-3.5 py-2 rounded-xl bg-[#1E3A8A] text-white text-xs font-semibold hover:bg-[#172E6E] cursor-pointer"
-                >
-                  <Upload className="w-3.5 h-3.5" />
-                  <span>Import Disc / Bundle (.js / .json)</span>
-                </button>
-                <input
-                  ref={globalDiscImportRef}
-                  type="file"
-                  accept=".js,.disc.js,.json,.disc.json,.discs.json"
-                  onChange={handleGlobalImportFile}
-                  className="hidden"
-                />
-
-                <button
-                  type="button"
-                  onClick={() =>
-                    downloadFile(
-                      serializeAllDiscsBundle(sortedDiscs),
-                      `UMH_All_Logic_Discs_${new Date().toISOString().slice(0, 10)}.discs.json`,
-                      'application/json;charset=utf-8'
-                    )
-                  }
-                  className="inline-flex items-center gap-1.5 px-3.5 py-2 rounded-xl bg-white border border-slate-200 text-xs font-semibold text-slate-700 hover:bg-slate-100 cursor-pointer"
-                >
-                  <Download className="w-3.5 h-3.5 text-[#047857]" />
-                  <span>Export Semua Disc (.json)</span>
-                </button>
-
-                <button
-                  type="button"
-                  onClick={handleCreateNewDiscSlot}
-                  className="inline-flex items-center gap-1.5 px-3.5 py-2 rounded-xl bg-[#047857] text-white text-xs font-semibold hover:bg-[#065F46] cursor-pointer"
-                >
-                  <Plus className="w-3.5 h-3.5" />
-                  <span>Sub-Proses Baru</span>
-                </button>
-
-                {confirmResetDiscs ? (
-                  <div className="inline-flex items-center gap-1">
-                    <button
-                      type="button"
-                      onClick={handleResetAllDiscs}
-                      className="px-2.5 py-2 rounded-xl bg-red-600 text-white text-xs font-semibold hover:bg-red-700 cursor-pointer"
-                    >
-                      Ya, Reset Disc
-                    </button>
-                    <button
-                      type="button"
-                      onClick={() => setConfirmResetDiscs(false)}
-                      className="px-2.5 py-2 rounded-xl bg-slate-200 text-slate-700 text-xs font-medium cursor-pointer"
-                    >
-                      Batal
-                    </button>
-                  </div>
-                ) : (
+                <div className="flex items-center gap-2 shrink-0">
                   <button
                     type="button"
-                    onClick={() => setConfirmResetDiscs(true)}
-                    className="inline-flex items-center gap-1 px-3 py-2 rounded-xl bg-white border border-slate-200 text-xs font-semibold text-slate-600 hover:bg-slate-100 cursor-pointer"
+                    onClick={handleResetAllDiscs}
+                    className="px-3 py-1.5 rounded-lg bg-red-600 text-white text-xs font-semibold hover:bg-red-700 cursor-pointer whitespace-nowrap"
                   >
-                    <RotateCcw className="w-3.5 h-3.5" />
-                    <span>Reset Disc</span>
+                    Ya, Reset Semua Disc
                   </button>
-                )}
+                  <button
+                    type="button"
+                    onClick={() => setConfirmResetDiscs(false)}
+                    className="px-3 py-1.5 rounded-lg bg-white border border-slate-200 text-slate-700 text-xs font-medium hover:bg-slate-50 cursor-pointer whitespace-nowrap"
+                  >
+                    Batal
+                  </button>
+                </div>
               </div>
+            )}
+
+            {/* Quiet Unboxed Format Info Line */}
+            <div className="flex flex-wrap items-center justify-between gap-2 text-xs text-slate-500">
+              <span>
+                Format bongkar-pasang <span className="font-mono-num font-semibold text-slate-700">{DISC_FORMAT_VERSION}</span> · Wajib lulus validasi 5 tahap sebelum aktif.
+              </span>
+              <button
+                type="button"
+                onClick={() => setShowFormatGuide((v) => !v)}
+                className="inline-flex items-center gap-1 font-semibold text-[#1E3A8A] hover:underline cursor-pointer"
+              >
+                <span>{showFormatGuide ? 'Sembunyikan panduan' : 'Lihat contoh format .disc.js'}</span>
+                {showFormatGuide ? (
+                  <ChevronUp className="w-3.5 h-3.5" />
+                ) : (
+                  <ChevronDown className="w-3.5 h-3.5" />
+                )}
+              </button>
             </div>
 
             {/* Collapsible Format Specification Card */}
@@ -925,6 +1063,21 @@ export function StdParamsView({
           </div>
         )}
       </div>
+
+      {/* Floating Bulk Edit & Save Confirmation Modal for Parameter STD & Matriks 2D */}
+      {bulkModal && (
+        <StdBulkEditModal
+          currentDb={draft}
+          initialTab={bulkModal.initialTab}
+          initialStage={bulkModal.initialStage}
+          initialDraftDb={bulkModal.initialDraftDb}
+          source={bulkModal.source}
+          sourceFileName={bulkModal.sourceFileName}
+          detectedSheets={bulkModal.detectedSheets}
+          onCommit={handleCommitBulk}
+          onClose={() => setBulkModal(null)}
+        />
+      )}
 
       {/* Single Disc Inspector, Editor & Pre-Apply Validator Modal */}
       {editingDiscModal && (

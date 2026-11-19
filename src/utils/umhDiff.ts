@@ -1,3 +1,4 @@
+import { getAllowSecForMode } from '../engine/umhCalculator';
 import {
   AssyRecord,
   AssyRefreshDiff,
@@ -10,11 +11,11 @@ import {
 const DIFF_EPSILON = 1e-6;
 
 function getSubAllow(sub: SubStepResult, mode: AssyRecord['params']['allowanceMode']): number {
-  return mode === 'by_process' ? sub.allowByProcessSec : sub.allowByFinalSec;
+  return getAllowSecForMode(mode, sub.baseSec, sub.allowByProcessSec, sub.allowByFinalSec);
 }
 
 function getProcAllow(proc: ProcessResult, mode: AssyRecord['params']['allowanceMode']): number {
-  return mode === 'by_process' ? proc.allowByProcessSec : proc.allowByFinalSec;
+  return getAllowSecForMode(mode, proc.baseSec, proc.allowByProcessSec, proc.allowByFinalSec);
 }
 
 function keySubSteps(subSteps: SubStepResult[]): Map<string, SubStepResult> {
@@ -118,14 +119,18 @@ export function computeAssyRefreshDiff(
   const afterBaseSec = afterRecord.calculation.totalBaseSec;
   const deltaBaseSec = afterBaseSec - beforeBaseSec;
 
-  const beforeAllowSec =
-    mode === 'by_process'
-      ? beforeRecord.calculation.totalAllowByProcessSec
-      : beforeRecord.calculation.totalAllowByFinalSec;
-  const afterAllowSec =
-    mode === 'by_process'
-      ? afterRecord.calculation.totalAllowByProcessSec
-      : afterRecord.calculation.totalAllowByFinalSec;
+  const beforeAllowSec = getAllowSecForMode(
+    mode,
+    beforeRecord.calculation.totalBaseSec,
+    beforeRecord.calculation.totalAllowByProcessSec,
+    beforeRecord.calculation.totalAllowByFinalSec
+  );
+  const afterAllowSec = getAllowSecForMode(
+    mode,
+    afterRecord.calculation.totalBaseSec,
+    afterRecord.calculation.totalAllowByProcessSec,
+    afterRecord.calculation.totalAllowByFinalSec
+  );
   const deltaAllowSec = afterAllowSec - beforeAllowSec;
 
   if (

@@ -1,4 +1,5 @@
 import { ChevronDown, ChevronRight } from 'lucide-react';
+import { getAllowanceModeLabel } from '../engine/umhCalculator';
 import { AssyRefreshDiff } from '../types/umh';
 
 interface RefreshDiffViewerProps {
@@ -60,7 +61,7 @@ export function RefreshDiffViewer({
                   </span>
                   <span className="text-xs text-slate-500">
                     · {assy.customer || '-'} ·{' '}
-                    {assy.allowanceMode === 'by_process' ? 'By Proses' : 'By Hasil Akhir'} ·{' '}
+                    {getAllowanceModeLabel(assy.allowanceMode, 'short')} ·{' '}
                     <span className="font-mono-num">{assy.processDiffs.length}</span> proses
                     terdampak
                   </span>

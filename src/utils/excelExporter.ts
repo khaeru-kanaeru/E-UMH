@@ -1,5 +1,10 @@
 import XLSX from 'xlsx-js-style';
-import { getVariantResult } from '../engine/umhCalculator';
+import {
+  getAllowanceModeLabel,
+  getAllowSecForMode,
+  getEffectiveLot,
+  getVariantResult,
+} from '../engine/umhCalculator';
 import { AllowanceMode, AssyRecord, CalculationVariant, UiLang } from '../types/umh';
 import {
   translateBasis,
@@ -126,10 +131,14 @@ export function exportUmhExcel(
   const regCalc = getVariantResult(record, 'reg');
   const smvCalc = getVariantResult(record, 'smv');
 
+  const effectiveLot = getEffectiveLot(params.lot);
+  const effPct = activeMode === 'none' ? 0 : params.pfdAllowancePct || 0;
   const modeLabel =
-    activeMode === 'by_final'
-      ? `Allowance By Hasil Akhir (+${params.pfdAllowancePct || 0}% Justified)`
-      : `Allowance By Proses (+${params.pfdAllowancePct || 0}% Tiap Proses)`;
+    activeMode === 'none'
+      ? '0. Tanpa Allowance (Base 0%)'
+      : activeMode === 'by_final'
+      ? `2. Allowance By Hasil Akhir (+${effPct}% Justified)`
+      : `1. Allowance By Proses (+${effPct}% Tiap Proses)`;
 
   const sumHeaders = [
     'No',
@@ -151,7 +160,7 @@ export function exportUmhExcel(
       '', '', '', '', '', '', '', '', '',
     ],
     [
-      `Assy No: ${params.assyNo}  |  Customer: ${params.customer || '-'}  |  Metode: ${modeLabel}`,
+      `Assy No: ${params.assyNo}  |  Customer: ${params.customer || '-'}  |  LOT: ${effectiveLot}  |  Metode: ${modeLabel}`,
       '', '', '', '', '', '', '', '', '',
     ],
     [],
@@ -160,10 +169,10 @@ export function exportUmhExcel(
       params.assyNo,
       'Customer',
       params.customer || '-',
-      'Master CCT',
-      params.masterCct,
+      'Master CCT / LOT',
+      `${params.masterCct} CCT / LOT ${effectiveLot}`,
       'Allowance (%)',
-      `${params.pfdAllowancePct || 0}%`,
+      `${effPct}%`,
       'Sirkuit PPCS',
       record.ppcsList.length,
     ],
@@ -207,8 +216,12 @@ export function exportUmhExcel(
     bannerStyle: any,
     calc: CalculationVariant
   ) => {
-    const totalStdSec =
-      activeMode === 'by_final' ? calc.totalAllowByFinalSec : calc.totalAllowByProcessSec;
+    const totalStdSec = getAllowSecForMode(
+      activeMode,
+      calc.totalBaseSec,
+      calc.totalAllowByProcessSec,
+      calc.totalAllowByFinalSec
+    );
     const totAllow = totalStdSec - calc.totalBaseSec;
 
     const sectionRowIdx = sumAoa.length;
@@ -223,7 +236,12 @@ export function exportUmhExcel(
     rowHeights[headerRowIdx] = 26;
 
     calc.processes.forEach((it, idx) => {
-      const stdVal = activeMode === 'by_final' ? it.allowByFinalSec : it.allowByProcessSec;
+      const stdVal = getAllowSecForMode(
+        activeMode,
+        it.baseSec,
+        it.allowByProcessSec,
+        it.allowByFinalSec
+      );
       const allowSec = stdVal - it.baseSec;
       const effAllowPct = it.baseSec > 0 ? (allowSec / it.baseSec) * 100 : 0;
       const pName = translateProcessName(it.processId, it.processName, it.jpName, lang);
@@ -271,7 +289,7 @@ export function exportUmhExcel(
       Number(calc.totalBaseSec.toFixed(2)),
       Number(totalStdSec.toFixed(2)),
       Number(totAllow.toFixed(2)),
-      Number((params.pfdAllowancePct || 0).toFixed(1)),
+      Number(effPct.toFixed(1)),
       Number((calc.totalBaseSec / 60).toFixed(2)),
       Number((totalStdSec / 60).toFixed(2)),
       Number((calc.totalBaseSec / 3600).toFixed(4)),
@@ -346,9 +364,14 @@ export function exportUmhExcel(
     calc.processes.forEach((it, procIdx) => {
       if (!it.subSteps || it.subSteps.length === 0) return;
 
-      const stdVal = activeMode === 'by_final' ? it.allowByFinalSec : it.allowByProcessSec;
+      const stdVal = getAllowSecForMode(
+        activeMode,
+        it.baseSec,
+        it.allowByProcessSec,
+        it.allowByFinalSec
+      );
       const procAllowSec = stdVal - it.baseSec;
-      const effPct = it.baseSec > 0 ? (procAllowSec / it.baseSec) * 100 : 0;
+      const effPctProc = it.baseSec > 0 ? (procAllowSec / it.baseSec) * 100 : 0;
       const procLabel = translateProcessName(it.processId, it.processName, it.jpName, lang);
 
       const prefix = variantTag === 'REG' ? `R${procIdx + 1}` : `S${procIdx + 1}`;
@@ -370,7 +393,7 @@ export function exportUmhExcel(
           '', '', '', '', '', '', '', '', '', '', '', '',
         ],
         [
-          `Assy: ${params.assyNo}  |  Master CCT: ${params.masterCct}  |  Base: ${it.baseSec.toFixed(2)}s  |  Allow Total: ${stdVal.toFixed(2)}s (+${procAllowSec.toFixed(2)}s / ${effPct.toFixed(1)}%)`,
+          `Assy: ${params.assyNo}  |  Master CCT: ${params.masterCct}  |  LOT: ${effectiveLot}  |  Base: ${it.baseSec.toFixed(2)}s  |  Allow Total: ${stdVal.toFixed(2)}s (+${procAllowSec.toFixed(2)}s / ${effPctProc.toFixed(1)}%)`,
           '', '', '', '', '', '', '', '', '', '', '', '',
         ],
         [],
@@ -392,7 +415,12 @@ export function exportUmhExcel(
       ];
 
       it.subSteps.forEach((st, sIdx) => {
-        const subStd = activeMode === 'by_final' ? st.allowByFinalSec : st.allowByProcessSec;
+        const subStd = getAllowSecForMode(
+          activeMode,
+          st.baseSec,
+          st.allowByProcessSec,
+          st.allowByFinalSec
+        );
         const subAllow = subStd - st.baseSec;
 
         subAoa.push([
@@ -511,10 +539,11 @@ export function exportUmhExcel(
 
 function getActiveAllowSec(
   mode: AllowanceMode,
+  baseSec: number,
   allowByProcessSec: number,
   allowByFinalSec: number
 ): number {
-  return mode === 'by_final' ? allowByFinalSec : allowByProcessSec;
+  return getAllowSecForMode(mode, baseSec, allowByProcessSec, allowByFinalSec);
 }
 
 function formatDateCompact(iso: string): string {
@@ -606,12 +635,14 @@ export function exportDatabaseAssyExcel(
     const regStdSec = regCalc.totalBaseSec;
     const regAllowSec = getActiveAllowSec(
       mode,
+      regCalc.totalBaseSec,
       regCalc.totalAllowByProcessSec,
       regCalc.totalAllowByFinalSec
     );
     const smvStdSec = smvCalc.totalBaseSec;
     const smvAllowSec = getActiveAllowSec(
       mode,
+      smvCalc.totalBaseSec,
       smvCalc.totalAllowByProcessSec,
       smvCalc.totalAllowByFinalSec
     );
@@ -633,8 +664,8 @@ export function exportDatabaseAssyExcel(
       idx + 1,
       rec.params.assyNo,
       rec.params.customer || '-',
-      mode === 'by_final' ? 'By Hasil Akhir' : 'By Proses',
-      Number((rec.params.pfdAllowancePct || 0).toFixed(1)),
+      getAllowanceModeLabel(mode, 'short'),
+      Number((mode === 'none' ? 0 : rec.params.pfdAllowancePct || 0).toFixed(1)),
       rec.params.masterCct || 0,
       rec.ppcsList.length,
       Number(regStdSec.toFixed(2)),
@@ -826,13 +857,19 @@ export function exportDatabaseAssyExcel(
       const mode = rec.params.allowanceMode;
       const totalAllowSec = getActiveAllowSec(
         mode,
+        calc.totalBaseSec,
         calc.totalAllowByProcessSec,
         calc.totalAllowByFinalSec
       );
-      const modeText = mode === 'by_final' ? 'By Hasil Akhir' : 'By Proses';
+      const modeText = getAllowanceModeLabel(mode, 'short');
 
       calc.processes.forEach((proc, pIdx) => {
-        const allowSec = getActiveAllowSec(mode, proc.allowByProcessSec, proc.allowByFinalSec);
+        const allowSec = getActiveAllowSec(
+          mode,
+          proc.baseSec,
+          proc.allowByProcessSec,
+          proc.allowByFinalSec
+        );
         const addSec = allowSec - proc.baseSec;
         const sharePct = totalAllowSec > 0 ? (allowSec / totalAllowSec) * 100 : 0;
         const pName = translateProcessName(proc.processId, proc.processName, proc.jpName, lang);
@@ -896,7 +933,7 @@ export function exportDatabaseAssyExcel(
         Number((calc.totalBaseSec / 3600).toFixed(4)),
         Number((totalAllowSec / 3600).toFixed(4)),
         100,
-        `PFD +${rec.params.pfdAllowancePct || 0}%`,
+        `PFD +${mode === 'none' ? 0 : rec.params.pfdAllowancePct || 0}%`,
       ]);
       rowStyles.push({
         rowIdx: subRowIdx,
@@ -974,9 +1011,9 @@ export function exportDatabaseAssyExcel(
     const aoa: any[][] = [
       [`DETAIL PROSES ASSY: ${rec.params.assyNo}`, ...Array(9).fill('')],
       [
-        `Customer: ${rec.params.customer || '-'}  |  CCT: ${rec.params.masterCct}  |  PFD: +${
-          rec.params.pfdAllowancePct || 0
-        }%  |  Metode: ${mode === 'by_final' ? 'By Hasil Akhir' : 'By Proses'}`,
+        `Customer: ${rec.params.customer || '-'}  |  CCT: ${rec.params.masterCct}  |  LOT: ${getEffectiveLot(rec.params.lot)}  |  PFD: +${
+          mode === 'none' ? 0 : rec.params.pfdAllowancePct || 0
+        }%  |  Metode: ${getAllowanceModeLabel(mode, 'short')}`,
         ...Array(9).fill(''),
       ],
       [],
@@ -1018,7 +1055,12 @@ export function exportDatabaseAssyExcel(
       stylesQueue.push({ rowIdx: thIdx, styles: Array(10).fill(sTh) });
 
       calc.processes.forEach((it, pIdx) => {
-        const allowSec = getActiveAllowSec(mode, it.allowByProcessSec, it.allowByFinalSec);
+        const allowSec = getActiveAllowSec(
+          mode,
+          it.baseSec,
+          it.allowByProcessSec,
+          it.allowByFinalSec
+        );
         const addSec = allowSec - it.baseSec;
         const effPct = it.baseSec > 0 ? (addSec / it.baseSec) * 100 : 0;
         const pName = translateProcessName(it.processId, it.processName, it.jpName, lang);
@@ -1061,6 +1103,7 @@ export function exportDatabaseAssyExcel(
 
       const totAllow = getActiveAllowSec(
         mode,
+        calc.totalBaseSec,
         calc.totalAllowByProcessSec,
         calc.totalAllowByFinalSec
       );
@@ -1071,7 +1114,7 @@ export function exportDatabaseAssyExcel(
         Number(calc.totalBaseSec.toFixed(2)),
         Number(totAllow.toFixed(2)),
         Number((totAllow - calc.totalBaseSec).toFixed(2)),
-        Number((rec.params.pfdAllowancePct || 0).toFixed(1)),
+        Number((mode === 'none' ? 0 : rec.params.pfdAllowancePct || 0).toFixed(1)),
         Number((calc.totalBaseSec / 60).toFixed(2)),
         Number((totAllow / 60).toFixed(2)),
         Number((calc.totalBaseSec / 3600).toFixed(4)),
@@ -1115,7 +1158,12 @@ export function exportDatabaseAssyExcel(
       const pName = translateProcessName(proc.processId, proc.processName, proc.jpName, lang);
       proc.subSteps.forEach((st) => {
         if (st.baseSec <= 0 && st.qty <= 0) return;
-        const allowSec = getActiveAllowSec(mode, st.allowByProcessSec, st.allowByFinalSec);
+        const allowSec = getActiveAllowSec(
+          mode,
+          st.baseSec,
+          st.allowByProcessSec,
+          st.allowByFinalSec
+        );
         activeSubRows.push([
           proc.processId,
           pName,

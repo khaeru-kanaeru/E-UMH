@@ -2,75 +2,86 @@ import { useMemo, useRef, useState } from 'react';
 import {
   CheckCircle2,
   Download,
-  FileSpreadsheet,
-  Plus,
+  History,
+  Pencil,
   RotateCcw,
   Search,
-  Trash2,
   Upload,
   X,
 } from 'lucide-react';
-import { AutoCutItem, FeederItem } from '../types/umh';
+import { DEFAULT_AUTO_CUT_LIST, DEFAULT_FEEDER_LIST } from '../data/defaultStdDb';
+import {
+  AutoCutItem,
+  FeederItem,
+  MasterChangeHistoryEntry,
+  MasterChangeSource,
+} from '../types/umh';
 import {
   exportAutoCutTemplateXlsx,
   exportFeederTemplateXlsx,
   parseAutoCutExcelFile,
   parseFeederExcelFile,
 } from '../utils/excelParser';
+import { ActionMenu } from './ActionMenu';
+import { MasterListBulkEditModal } from './MasterListBulkEditModal';
 
 interface AutoCutFeederViewProps {
   autoCutList: AutoCutItem[];
   feederList: FeederItem[];
-  onUpdateAutoCut: (list: AutoCutItem[], immediate?: boolean) => void;
-  onUpdateFeeder: (list: FeederItem[], immediate?: boolean) => void;
-  onDeleteAutoCutItem?: (item: AutoCutItem) => void;
-  onDeleteFeederItem?: (item: FeederItem) => void;
-  onResetAutoCut: () => AutoCutItem[];
-  onResetFeeder: () => FeederItem[];
+  autoCutHistoryCount: number;
+  feederHistoryCount: number;
+  onOpenMasterHistory: (cat: 'auto_cut' | 'feeder') => void;
+  onCommitAutoCutChange: (
+    nextList: AutoCutItem[],
+    entry: MasterChangeHistoryEntry,
+    removedItems: AutoCutItem[]
+  ) => void;
+  onCommitFeederChange: (
+    nextList: FeederItem[],
+    entry: MasterChangeHistoryEntry,
+    removedItems: FeederItem[]
+  ) => void;
 }
 
-interface PendingUpload<T> {
-  fileName: string;
-  sheetName: string;
-  items: T[];
-  skippedCount: number;
+interface BulkModalState {
+  kind: 'auto_cut' | 'feeder';
+  initialStage: 'edit' | 'confirm';
+  source: MasterChangeSource;
+  sourceFileName?: string;
+  sourceSheetName?: string;
+  uploadedAutoCutItems?: AutoCutItem[];
+  uploadedFeederItems?: FeederItem[];
+  resetTargetAutoCut?: AutoCutItem[];
+  resetTargetFeeder?: FeederItem[];
 }
 
 export function AutoCutFeederView({
   autoCutList,
   feederList,
-  onUpdateAutoCut,
-  onUpdateFeeder,
-  onDeleteAutoCutItem,
-  onDeleteFeederItem,
-  onResetAutoCut,
-  onResetFeeder,
+  autoCutHistoryCount,
+  feederHistoryCount,
+  onOpenMasterHistory,
+  onCommitAutoCutChange,
+  onCommitFeederChange,
 }: AutoCutFeederViewProps) {
-  // Auto Cutting List state
-  const [acCust, setAcCust] = useState('All');
-  const [acTerm, setAcTerm] = useState('');
   const [searchAc, setSearchAc] = useState('');
-  const [confirmResetAc, setConfirmResetAc] = useState(false);
   const [acUploading, setAcUploading] = useState(false);
-  const [acPending, setAcPending] = useState<PendingUpload<AutoCutItem> | null>(null);
   const [acNotice, setAcNotice] = useState<{ kind: 'ok' | 'err'; text: string } | null>(null);
   const acFileRef = useRef<HTMLInputElement>(null);
 
-  // Feeder List state
-  const [fdSeal, setFdSeal] = useState('');
   const [searchFd, setSearchFd] = useState('');
-  const [confirmResetFd, setConfirmResetFd] = useState(false);
   const [fdUploading, setFdUploading] = useState(false);
-  const [fdPending, setFdPending] = useState<PendingUpload<FeederItem> | null>(null);
   const [fdNotice, setFdNotice] = useState<{ kind: 'ok' | 'err'; text: string } | null>(null);
   const fdFileRef = useRef<HTMLInputElement>(null);
+
+  const [bulkModal, setBulkModal] = useState<BulkModalState | null>(null);
 
   const showAcNotice = (kind: 'ok' | 'err', text: string) => {
     setAcNotice({ kind, text });
     if (kind === 'ok') {
       setTimeout(() => {
         setAcNotice((prev) => (prev?.text === text ? null : prev));
-      }, 4000);
+      }, 4500);
     }
   };
 
@@ -79,7 +90,7 @@ export function AutoCutFeederView({
     if (kind === 'ok') {
       setTimeout(() => {
         setFdNotice((prev) => (prev?.text === text ? null : prev));
-      }, 4000);
+      }, 4500);
     }
   };
 
@@ -98,59 +109,6 @@ export function AutoCutFeederView({
     return feederList.filter((x) => x.seal.toLowerCase().includes(q));
   }, [feederList, searchFd]);
 
-  const handleAddAc = (e: React.FormEvent) => {
-    e.preventDefault();
-    const term = acTerm.trim();
-    if (!term) return;
-    onUpdateAutoCut(
-      [
-        {
-          id: `acl_${Date.now()}`,
-          customer: acCust.trim() || 'All',
-          terminal: term,
-          process: 'auto cut',
-        },
-        ...autoCutList,
-      ],
-      true
-    );
-    setAcTerm('');
-  };
-
-  const handleAddFd = (e: React.FormEvent) => {
-    e.preventDefault();
-    const seal = fdSeal.trim();
-    if (!seal) return;
-    onUpdateFeeder(
-      [
-        {
-          id: `fl_${Date.now()}`,
-          seal,
-          process: 'auto feeder',
-        },
-        ...feederList,
-      ],
-      true
-    );
-    setFdSeal('');
-  };
-
-  const handleConfirmResetAc = () => {
-    const fresh = onResetAutoCut();
-    setConfirmResetAc(false);
-    setAcPending(null);
-    setSearchAc('');
-    showAcNotice('ok', `Database Auto Cutting List di-reset ke default (${fresh.length} item).`);
-  };
-
-  const handleConfirmResetFd = () => {
-    const fresh = onResetFeeder();
-    setConfirmResetFd(false);
-    setFdPending(null);
-    setSearchFd('');
-    showFdNotice('ok', `Database Feeder List di-reset ke default (${fresh.length} item).`);
-  };
-
   const handleAcFileSelect = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     e.target.value = '';
@@ -158,7 +116,6 @@ export function AutoCutFeederView({
 
     setAcUploading(true);
     setAcNotice(null);
-    setAcPending(null);
     try {
       const parsed = await parseAutoCutExcelFile(file);
       if (parsed.items.length === 0) {
@@ -168,11 +125,13 @@ export function AutoCutFeederView({
         );
         return;
       }
-      setAcPending({
-        fileName: file.name,
-        sheetName: parsed.sheetName,
-        items: parsed.items,
-        skippedCount: parsed.skippedCount,
+      setBulkModal({
+        kind: 'auto_cut',
+        initialStage: 'confirm',
+        source: 'excel_upload',
+        sourceFileName: file.name,
+        sourceSheetName: parsed.sheetName,
+        uploadedAutoCutItems: parsed.items,
       });
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
@@ -182,34 +141,6 @@ export function AutoCutFeederView({
     }
   };
 
-  const handleApplyAcUpload = (mode: 'replace' | 'merge') => {
-    if (!acPending) return;
-    if (mode === 'replace') {
-      onUpdateAutoCut(acPending.items, true);
-      showAcNotice(
-        'ok',
-        `Database Auto Cutting List diperbarui (${acPending.items.length} terminal dari "${acPending.fileName}").`
-      );
-    } else {
-      const existingKeys = new Set(
-        autoCutList.map(
-          (x) => `${x.customer.trim().toLowerCase()}||${x.terminal.trim().toLowerCase()}`
-        )
-      );
-      const additions = acPending.items.filter((x) => {
-        const key = `${x.customer.trim().toLowerCase()}||${x.terminal.trim().toLowerCase()}`;
-        return !existingKeys.has(key);
-      });
-      onUpdateAutoCut([...additions, ...autoCutList], true);
-      showAcNotice(
-        'ok',
-        `Ditambahkan ${additions.length} terminal baru dari "${acPending.fileName}" (total ${autoCutList.length + additions.length} item).`
-      );
-    }
-    setAcPending(null);
-    setSearchAc('');
-  };
-
   const handleFdFileSelect = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     e.target.value = '';
@@ -217,7 +148,6 @@ export function AutoCutFeederView({
 
     setFdUploading(true);
     setFdNotice(null);
-    setFdPending(null);
     try {
       const parsed = await parseFeederExcelFile(file);
       if (parsed.items.length === 0) {
@@ -227,11 +157,13 @@ export function AutoCutFeederView({
         );
         return;
       }
-      setFdPending({
-        fileName: file.name,
-        sheetName: parsed.sheetName,
-        items: parsed.items,
-        skippedCount: parsed.skippedCount,
+      setBulkModal({
+        kind: 'feeder',
+        initialStage: 'confirm',
+        source: 'excel_upload',
+        sourceFileName: file.name,
+        sourceSheetName: parsed.sheetName,
+        uploadedFeederItems: parsed.items,
       });
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
@@ -241,35 +173,44 @@ export function AutoCutFeederView({
     }
   };
 
-  const handleApplyFdUpload = (mode: 'replace' | 'merge') => {
-    if (!fdPending) return;
-    if (mode === 'replace') {
-      onUpdateFeeder(fdPending.items, true);
-      showFdNotice(
-        'ok',
-        `Database Feeder List diperbarui (${fdPending.items.length} seal dari "${fdPending.fileName}").`
-      );
-    } else {
-      const existingKeys = new Set(feederList.map((x) => x.seal.trim().toLowerCase()));
-      const additions = fdPending.items.filter(
-        (x) => !existingKeys.has(x.seal.trim().toLowerCase())
-      );
-      onUpdateFeeder([...additions, ...feederList], true);
-      showFdNotice(
-        'ok',
-        `Ditambahkan ${additions.length} seal baru dari "${fdPending.fileName}" (total ${feederList.length + additions.length} item).`
-      );
-    }
-    setFdPending(null);
+  const handleCommitAc = (
+    nextList: AutoCutItem[],
+    entry: MasterChangeHistoryEntry,
+    removedItems: AutoCutItem[]
+  ) => {
+    onCommitAutoCutChange(nextList, entry, removedItems);
+    setBulkModal(null);
+    setSearchAc('');
+    showAcNotice(
+      'ok',
+      `Auto Cutting List diperbarui oleh ${entry.responsibleName} (${entry.changes.length} perubahan · total ${nextList.length} item).${
+        removedItems.length > 0 ? ` ${removedItems.length} item dihapus dipindahkan ke Recycle Bin.` : ''
+      }`
+    );
+  };
+
+  const handleCommitFd = (
+    nextList: FeederItem[],
+    entry: MasterChangeHistoryEntry,
+    removedItems: FeederItem[]
+  ) => {
+    onCommitFeederChange(nextList, entry, removedItems);
+    setBulkModal(null);
     setSearchFd('');
+    showFdNotice(
+      'ok',
+      `Feeder List diperbarui oleh ${entry.responsibleName} (${entry.changes.length} perubahan · total ${nextList.length} item).${
+        removedItems.length > 0 ? ` ${removedItems.length} item dihapus dipindahkan ke Recycle Bin.` : ''
+      }`
+    );
   };
 
   return (
     <div className="grid grid-cols-1 xl:grid-cols-2 gap-6">
-      {/* Left: Database Auto Cutting List */}
+      {/* Left: Database Auto Cutting List (Fixed Read-Only Table) */}
       <section className="glass-surface rounded-2xl p-6 flex flex-col gap-4">
-        <div className="flex flex-col gap-3 pb-3 border-b border-slate-100">
-          <div className="flex items-start justify-between gap-3">
+        <div className="pb-4 border-b border-slate-200">
+          <div className="flex flex-col sm:flex-row sm:items-start justify-between gap-3">
             <div className="min-w-0">
               <p className="text-[11px] font-semibold text-[#1E3A8A]">
                 自動切断端子マスタ · Auto Cutting List
@@ -278,71 +219,86 @@ export function AutoCutFeederView({
                 Database Auto Cutting List
               </h1>
               <p className="text-xs text-slate-500 mt-0.5">
-                Validasi terminal mesin auto-cutting (
+                Tampilan fixed ·{' '}
                 <span className="font-mono-num font-semibold text-slate-700">
                   {autoCutList.length}
                 </span>{' '}
-                item).
+                terminal terdaftar
               </p>
             </div>
-          </div>
 
-          {/* Compact Action Bar: Upload Excel, Template .xlsx, Reset Default */}
-          <div className="flex flex-wrap items-center gap-2">
-            <input
-              ref={acFileRef}
-              type="file"
-              accept=".xlsx,.xls,.csv"
-              onChange={handleAcFileSelect}
-              className="hidden"
-            />
-            <button
-              type="button"
-              disabled={acUploading}
-              onClick={() => acFileRef.current?.click()}
-              className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-[#1E3A8A] text-white text-xs font-semibold hover:bg-[#172E6E] disabled:opacity-60 transition-colors cursor-pointer whitespace-nowrap"
-            >
-              <Upload className="w-3.5 h-3.5" />
-              <span>{acUploading ? 'Membaca...' : 'Upload Excel'}</span>
-            </button>
+            <div className="flex items-center gap-2 shrink-0">
+              <input
+                ref={acFileRef}
+                type="file"
+                accept=".xlsx,.xls,.csv"
+                onChange={handleAcFileSelect}
+                className="hidden"
+              />
 
-            <button
-              type="button"
-              onClick={() => exportAutoCutTemplateXlsx(autoCutList)}
-              className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-white border border-slate-200 text-xs font-semibold text-slate-700 hover:bg-slate-50 transition-colors cursor-pointer whitespace-nowrap"
-            >
-              <Download className="w-3.5 h-3.5 text-[#047857]" />
-              <span>Template .xlsx</span>
-            </button>
+              <button
+                type="button"
+                onClick={() => onOpenMasterHistory('auto_cut')}
+                className="inline-flex items-center gap-1.5 px-3 py-2 rounded-xl bg-white border border-slate-200 text-xs font-semibold text-slate-700 hover:bg-slate-50 transition-colors cursor-pointer whitespace-nowrap"
+              >
+                <History className="w-3.5 h-3.5 text-[#1E3A8A]" />
+                <span>
+                  Riwayat{autoCutHistoryCount > 0 ? ` (${autoCutHistoryCount})` : ''}
+                </span>
+              </button>
 
-            <div className="ml-auto">
-              {confirmResetAc ? (
-                <div className="inline-flex items-center gap-1.5">
-                  <button
-                    type="button"
-                    onClick={handleConfirmResetAc}
-                    className="px-2.5 py-1.5 rounded-xl bg-red-600 text-white text-xs font-semibold hover:bg-red-700 cursor-pointer whitespace-nowrap"
-                  >
-                    Ya, Reset
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => setConfirmResetAc(false)}
-                    className="px-2.5 py-1.5 rounded-xl bg-slate-200 text-slate-700 text-xs font-medium hover:bg-slate-300 cursor-pointer whitespace-nowrap"
-                  >
-                    Batal
-                  </button>
-                </div>
-              ) : (
-                <button
-                  type="button"
-                  onClick={() => setConfirmResetAc(true)}
-                  className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-white border border-slate-200 text-xs font-semibold text-slate-700 hover:bg-slate-50 transition-colors cursor-pointer whitespace-nowrap"
-                >
-                  <RotateCcw className="w-3.5 h-3.5" />
-                  <span>Reset Default</span>
-                </button>
-              )}
+              <button
+                type="button"
+                onClick={() =>
+                  setBulkModal({
+                    kind: 'auto_cut',
+                    initialStage: 'edit',
+                    source: 'manual_edit',
+                  })
+                }
+                className="inline-flex items-center gap-1.5 px-3.5 py-2 rounded-xl bg-[#1E3A8A] text-white text-xs font-semibold hover:bg-[#172E6E] transition-colors cursor-pointer whitespace-nowrap shadow-xs"
+              >
+                <Pencil className="w-3.5 h-3.5" />
+                <span>Edit Data</span>
+              </button>
+
+              <ActionMenu
+                compact
+                ariaLabel="Opsi Auto Cutting List"
+                items={[
+                  {
+                    id: 'upload_ac_excel',
+                    label: acUploading ? 'Membaca Excel...' : 'Upload Excel (.xlsx / .csv)',
+                    description: 'Pratinjau & konfirmasi sebelum simpan',
+                    icon: Upload,
+                    iconClassName: 'text-[#1E3A8A]',
+                    onClick: () => acFileRef.current?.click(),
+                  },
+                  {
+                    id: 'download_ac_template',
+                    label: 'Unduh Template .xlsx',
+                    description: 'Ekspor format & daftar saat ini',
+                    icon: Download,
+                    iconClassName: 'text-[#047857]',
+                    onClick: () => exportAutoCutTemplateXlsx(autoCutList),
+                  },
+                  {
+                    id: 'reset_ac_default',
+                    label: 'Reset ke Default',
+                    description: 'Bandingkan & kembalikan daftar standar',
+                    icon: RotateCcw,
+                    danger: true,
+                    dividerBefore: true,
+                    onClick: () =>
+                      setBulkModal({
+                        kind: 'auto_cut',
+                        initialStage: 'confirm',
+                        source: 'reset_default',
+                        resetTargetAutoCut: structuredClone(DEFAULT_AUTO_CUT_LIST),
+                      }),
+                  },
+                ]}
+              />
             </div>
           </div>
         </div>
@@ -371,100 +327,6 @@ export function AutoCutFeederView({
           </div>
         )}
 
-        {/* Inline Excel Upload Preview */}
-        {acPending && (
-          <div className="rounded-xl border border-blue-200 bg-blue-50/70 p-3.5 space-y-2.5 text-xs">
-            <div className="flex items-start justify-between gap-2">
-              <div className="flex items-start gap-2 min-w-0">
-                <FileSpreadsheet className="w-4 h-4 text-[#1E3A8A] shrink-0 mt-0.5" />
-                <div className="min-w-0">
-                  <p className="font-bold text-slate-900 truncate">
-                    {acPending.fileName}{' '}
-                    {acPending.sheetName && acPending.sheetName !== acPending.fileName && (
-                      <span className="font-normal text-slate-500">
-                        (Sheet: {acPending.sheetName})
-                      </span>
-                    )}
-                  </p>
-                  <p className="text-[11px] text-slate-600 mt-0.5">
-                    Terdeteksi{' '}
-                    <strong className="font-mono-num text-[#1E3A8A]">
-                      {acPending.items.length}
-                    </strong>{' '}
-                    terminal valid
-                    {acPending.skippedCount > 0 && (
-                      <> · {acPending.skippedCount} baris kosong/duplikat dilewati</>
-                    )}
-                    . Contoh:{' '}
-                    <span className="font-mono-num text-slate-700">
-                      {acPending.items
-                        .slice(0, 3)
-                        .map((x) => `${x.customer}:${x.terminal}`)
-                        .join(', ')}
-                    </span>
-                  </p>
-                </div>
-              </div>
-              <button
-                type="button"
-                onClick={() => setAcPending(null)}
-                className="p-1 rounded-lg text-slate-500 hover:bg-blue-100 cursor-pointer"
-                aria-label="Batal upload"
-              >
-                <X className="w-3.5 h-3.5" />
-              </button>
-            </div>
-            <div className="flex flex-wrap items-center gap-2">
-              <button
-                type="button"
-                onClick={() => handleApplyAcUpload('replace')}
-                className="px-3 py-1.5 rounded-lg bg-[#1E3A8A] text-white text-xs font-semibold hover:bg-[#172E6E] cursor-pointer"
-              >
-                Ganti Database ({acPending.items.length})
-              </button>
-              <button
-                type="button"
-                onClick={() => handleApplyAcUpload('merge')}
-                className="px-3 py-1.5 rounded-lg bg-white border border-slate-300 text-slate-700 text-xs font-semibold hover:bg-slate-50 cursor-pointer"
-              >
-                Gabung Baru
-              </button>
-              <button
-                type="button"
-                onClick={() => setAcPending(null)}
-                className="px-2.5 py-1.5 rounded-lg text-slate-600 text-xs font-medium hover:bg-blue-100 cursor-pointer"
-              >
-                Batal
-              </button>
-            </div>
-          </div>
-        )}
-
-        <form onSubmit={handleAddAc} className="grid grid-cols-1 sm:grid-cols-4 gap-2">
-          <input
-            type="text"
-            value={acCust}
-            onChange={(e) => setAcCust(e.target.value)}
-            placeholder="Customer"
-            className="px-3 py-2 text-xs bg-slate-50 border border-slate-200 rounded-xl focus:bg-white focus:outline-none focus:ring-2 focus:ring-[#1E3A8A]/20"
-          />
-          <input
-            type="text"
-            value={acTerm}
-            onChange={(e) => setAcTerm(e.target.value)}
-            placeholder="Item Terminal (cth: 1062-16-0122)"
-            required
-            className="sm:col-span-2 px-3 py-2 text-xs font-mono-num bg-slate-50 border border-slate-200 rounded-xl focus:bg-white focus:outline-none focus:ring-2 focus:ring-[#1E3A8A]/20"
-          />
-          <button
-            type="submit"
-            className="inline-flex items-center justify-center gap-1 px-3 py-2 rounded-xl bg-[#1E3A8A] text-white text-xs font-semibold hover:bg-[#172E6E] cursor-pointer"
-          >
-            <Plus className="w-3.5 h-3.5" />
-            <span>Tambah</span>
-          </button>
-        </form>
-
         <div className="relative">
           <Search className="w-4 h-4 text-slate-400 absolute left-3 top-1/2 -translate-y-1/2" />
           <input
@@ -476,81 +338,35 @@ export function AutoCutFeederView({
           />
         </div>
 
-        <div className="overflow-auto max-h-[460px] rounded-xl border border-slate-200 bg-white">
+        <div className="overflow-auto max-h-[520px] rounded-xl border border-slate-200 bg-white">
           <table className="w-full text-left border-collapse text-xs">
             <thead className="sticky top-0 bg-slate-50 border-b border-slate-200 text-slate-600 font-semibold">
               <tr>
-                <th className="py-2.5 px-3 w-28">Customer</th>
-                <th className="py-2.5 px-3">Item Terminal</th>
-                <th className="py-2.5 px-3 text-right w-16">Aksi</th>
+                <th className="py-2.5 px-3.5 w-12 text-center">#</th>
+                <th className="py-2.5 px-3.5 w-32">Customer</th>
+                <th className="py-2.5 px-3.5">Item Terminal</th>
               </tr>
             </thead>
             <tbody className="divide-y divide-slate-200/70">
               {filteredAc.length === 0 ? (
                 <tr>
-                  <td colSpan={3} className="py-8 text-center text-slate-400 text-xs">
+                  <td colSpan={3} className="py-10 text-center text-slate-400 text-xs">
                     {autoCutList.length === 0
-                      ? 'Database kosong. Upload Excel, tambah manual, atau klik Reset Default.'
+                      ? 'Database kosong. Klik Edit Data, Upload Excel, atau Reset ke Default.'
                       : 'Tidak ada terminal yang cocok dengan pencarian.'}
                   </td>
                 </tr>
               ) : (
-                filteredAc.map((item) => (
-                  <tr key={item.id} className="hover:bg-slate-50/70">
-                    <td className="py-1.5 px-3">
-                      <input
-                        type="text"
-                        value={item.customer}
-                        onChange={(e) =>
-                          onUpdateAutoCut(
-                            autoCutList.map((a) =>
-                              a.id === item.id ? { ...a, customer: e.target.value } : a
-                            ),
-                            false
-                          )
-                        }
-                        onBlur={() => onUpdateAutoCut(autoCutList, true)}
-                        className="w-24 px-2 py-1 bg-slate-50 border border-slate-200 rounded-lg text-xs focus:bg-white focus:outline-none focus:ring-1 focus:ring-[#1E3A8A]"
-                      />
+                filteredAc.map((item, idx) => (
+                  <tr key={item.id} className="hover:bg-slate-50/70 transition-colors">
+                    <td className="py-2.5 px-3.5 text-center font-mono-num text-[11px] text-slate-400">
+                      {idx + 1}
                     </td>
-                    <td className="py-1.5 px-3">
-                      <input
-                        type="text"
-                        value={item.terminal}
-                        onChange={(e) =>
-                          onUpdateAutoCut(
-                            autoCutList.map((a) =>
-                              a.id === item.id ? { ...a, terminal: e.target.value } : a
-                            ),
-                            false
-                          )
-                        }
-                        onBlur={() => onUpdateAutoCut(autoCutList, true)}
-                        className="w-full px-2 py-1 bg-slate-50 border border-slate-200 rounded-lg text-xs font-mono-num font-semibold focus:bg-white focus:outline-none focus:ring-1 focus:ring-[#1E3A8A]"
-                      />
+                    <td className="py-2.5 px-3.5 font-semibold text-slate-700 whitespace-nowrap">
+                      {item.customer}
                     </td>
-                    <td className="py-1.5 px-3 text-right">
-                      <button
-                        type="button"
-                        onClick={() => {
-                          if (onDeleteAutoCutItem) {
-                            onDeleteAutoCutItem(item);
-                          } else {
-                            onUpdateAutoCut(
-                              autoCutList.filter((a) => a.id !== item.id),
-                              true
-                            );
-                          }
-                          showAcNotice(
-                            'ok',
-                            `Terminal "${item.terminal}" dipindahkan ke Recycle Bin (dapat di-restore).`
-                          );
-                        }}
-                        className="p-1.5 rounded-lg text-red-600 hover:bg-red-50 cursor-pointer"
-                        aria-label={`Hapus ${item.terminal}`}
-                      >
-                        <Trash2 className="w-3.5 h-3.5" />
-                      </button>
+                    <td className="py-2.5 px-3.5 font-mono-num font-semibold text-slate-900">
+                      {item.terminal}
                     </td>
                   </tr>
                 ))
@@ -560,10 +376,10 @@ export function AutoCutFeederView({
         </div>
       </section>
 
-      {/* Right: Database Feeder List */}
+      {/* Right: Database Feeder List (Fixed Read-Only Table) */}
       <section className="glass-surface rounded-2xl p-6 flex flex-col gap-4">
-        <div className="flex flex-col gap-3 pb-3 border-b border-slate-100">
-          <div className="flex items-start justify-between gap-3">
+        <div className="pb-4 border-b border-slate-200">
+          <div className="flex flex-col sm:flex-row sm:items-start justify-between gap-3">
             <div className="min-w-0">
               <p className="text-[11px] font-semibold text-[#1E3A8A]">
                 ゴム栓フィーダーマスタ · Auto-Feeder Seal
@@ -572,71 +388,86 @@ export function AutoCutFeederView({
                 Database Feeder List (Wire Seal)
               </h1>
               <p className="text-xs text-slate-500 mt-0.5">
-                Validasi rubber seal mesin auto-feeder (
+                Tampilan fixed ·{' '}
                 <span className="font-mono-num font-semibold text-slate-700">
                   {feederList.length}
                 </span>{' '}
-                item).
+                wire seal terdaftar
               </p>
             </div>
-          </div>
 
-          {/* Compact Action Bar: Upload Excel, Template .xlsx, Reset Default */}
-          <div className="flex flex-wrap items-center gap-2">
-            <input
-              ref={fdFileRef}
-              type="file"
-              accept=".xlsx,.xls,.csv"
-              onChange={handleFdFileSelect}
-              className="hidden"
-            />
-            <button
-              type="button"
-              disabled={fdUploading}
-              onClick={() => fdFileRef.current?.click()}
-              className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-[#1E3A8A] text-white text-xs font-semibold hover:bg-[#172E6E] disabled:opacity-60 transition-colors cursor-pointer whitespace-nowrap"
-            >
-              <Upload className="w-3.5 h-3.5" />
-              <span>{fdUploading ? 'Membaca...' : 'Upload Excel'}</span>
-            </button>
+            <div className="flex items-center gap-2 shrink-0">
+              <input
+                ref={fdFileRef}
+                type="file"
+                accept=".xlsx,.xls,.csv"
+                onChange={handleFdFileSelect}
+                className="hidden"
+              />
 
-            <button
-              type="button"
-              onClick={() => exportFeederTemplateXlsx(feederList)}
-              className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-white border border-slate-200 text-xs font-semibold text-slate-700 hover:bg-slate-50 transition-colors cursor-pointer whitespace-nowrap"
-            >
-              <Download className="w-3.5 h-3.5 text-[#047857]" />
-              <span>Template .xlsx</span>
-            </button>
+              <button
+                type="button"
+                onClick={() => onOpenMasterHistory('feeder')}
+                className="inline-flex items-center gap-1.5 px-3 py-2 rounded-xl bg-white border border-slate-200 text-xs font-semibold text-slate-700 hover:bg-slate-50 transition-colors cursor-pointer whitespace-nowrap"
+              >
+                <History className="w-3.5 h-3.5 text-[#1E3A8A]" />
+                <span>
+                  Riwayat{feederHistoryCount > 0 ? ` (${feederHistoryCount})` : ''}
+                </span>
+              </button>
 
-            <div className="ml-auto">
-              {confirmResetFd ? (
-                <div className="inline-flex items-center gap-1.5">
-                  <button
-                    type="button"
-                    onClick={handleConfirmResetFd}
-                    className="px-2.5 py-1.5 rounded-xl bg-red-600 text-white text-xs font-semibold hover:bg-red-700 cursor-pointer whitespace-nowrap"
-                  >
-                    Ya, Reset
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => setConfirmResetFd(false)}
-                    className="px-2.5 py-1.5 rounded-xl bg-slate-200 text-slate-700 text-xs font-medium hover:bg-slate-300 cursor-pointer whitespace-nowrap"
-                  >
-                    Batal
-                  </button>
-                </div>
-              ) : (
-                <button
-                  type="button"
-                  onClick={() => setConfirmResetFd(true)}
-                  className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-white border border-slate-200 text-xs font-semibold text-slate-700 hover:bg-slate-50 transition-colors cursor-pointer whitespace-nowrap"
-                >
-                  <RotateCcw className="w-3.5 h-3.5" />
-                  <span>Reset Default</span>
-                </button>
-              )}
+              <button
+                type="button"
+                onClick={() =>
+                  setBulkModal({
+                    kind: 'feeder',
+                    initialStage: 'edit',
+                    source: 'manual_edit',
+                  })
+                }
+                className="inline-flex items-center gap-1.5 px-3.5 py-2 rounded-xl bg-[#1E3A8A] text-white text-xs font-semibold hover:bg-[#172E6E] transition-colors cursor-pointer whitespace-nowrap shadow-xs"
+              >
+                <Pencil className="w-3.5 h-3.5" />
+                <span>Edit Data</span>
+              </button>
+
+              <ActionMenu
+                compact
+                ariaLabel="Opsi Feeder List"
+                items={[
+                  {
+                    id: 'upload_fd_excel',
+                    label: fdUploading ? 'Membaca Excel...' : 'Upload Excel (.xlsx / .csv)',
+                    description: 'Pratinjau & konfirmasi sebelum simpan',
+                    icon: Upload,
+                    iconClassName: 'text-[#1E3A8A]',
+                    onClick: () => fdFileRef.current?.click(),
+                  },
+                  {
+                    id: 'download_fd_template',
+                    label: 'Unduh Template .xlsx',
+                    description: 'Ekspor format & daftar saat ini',
+                    icon: Download,
+                    iconClassName: 'text-[#047857]',
+                    onClick: () => exportFeederTemplateXlsx(feederList),
+                  },
+                  {
+                    id: 'reset_fd_default',
+                    label: 'Reset ke Default',
+                    description: 'Bandingkan & kembalikan daftar standar',
+                    icon: RotateCcw,
+                    danger: true,
+                    dividerBefore: true,
+                    onClick: () =>
+                      setBulkModal({
+                        kind: 'feeder',
+                        initialStage: 'confirm',
+                        source: 'reset_default',
+                        resetTargetFeeder: structuredClone(DEFAULT_FEEDER_LIST),
+                      }),
+                  },
+                ]}
+              />
             </div>
           </div>
         </div>
@@ -665,93 +496,6 @@ export function AutoCutFeederView({
           </div>
         )}
 
-        {/* Inline Excel Upload Preview */}
-        {fdPending && (
-          <div className="rounded-xl border border-blue-200 bg-blue-50/70 p-3.5 space-y-2.5 text-xs">
-            <div className="flex items-start justify-between gap-2">
-              <div className="flex items-start gap-2 min-w-0">
-                <FileSpreadsheet className="w-4 h-4 text-[#1E3A8A] shrink-0 mt-0.5" />
-                <div className="min-w-0">
-                  <p className="font-bold text-slate-900 truncate">
-                    {fdPending.fileName}{' '}
-                    {fdPending.sheetName && fdPending.sheetName !== fdPending.fileName && (
-                      <span className="font-normal text-slate-500">
-                        (Sheet: {fdPending.sheetName})
-                      </span>
-                    )}
-                  </p>
-                  <p className="text-[11px] text-slate-600 mt-0.5">
-                    Terdeteksi{' '}
-                    <strong className="font-mono-num text-[#1E3A8A]">
-                      {fdPending.items.length}
-                    </strong>{' '}
-                    seal valid
-                    {fdPending.skippedCount > 0 && (
-                      <> · {fdPending.skippedCount} baris kosong/duplikat dilewati</>
-                    )}
-                    . Contoh:{' '}
-                    <span className="font-mono-num text-slate-700">
-                      {fdPending.items
-                        .slice(0, 3)
-                        .map((x) => x.seal)
-                        .join(', ')}
-                    </span>
-                  </p>
-                </div>
-              </div>
-              <button
-                type="button"
-                onClick={() => setFdPending(null)}
-                className="p-1 rounded-lg text-slate-500 hover:bg-blue-100 cursor-pointer"
-                aria-label="Batal upload"
-              >
-                <X className="w-3.5 h-3.5" />
-              </button>
-            </div>
-            <div className="flex flex-wrap items-center gap-2">
-              <button
-                type="button"
-                onClick={() => handleApplyFdUpload('replace')}
-                className="px-3 py-1.5 rounded-lg bg-[#1E3A8A] text-white text-xs font-semibold hover:bg-[#172E6E] cursor-pointer"
-              >
-                Ganti Database ({fdPending.items.length})
-              </button>
-              <button
-                type="button"
-                onClick={() => handleApplyFdUpload('merge')}
-                className="px-3 py-1.5 rounded-lg bg-white border border-slate-300 text-slate-700 text-xs font-semibold hover:bg-slate-50 cursor-pointer"
-              >
-                Gabung Baru
-              </button>
-              <button
-                type="button"
-                onClick={() => setFdPending(null)}
-                className="px-2.5 py-1.5 rounded-lg text-slate-600 text-xs font-medium hover:bg-blue-100 cursor-pointer"
-              >
-                Batal
-              </button>
-            </div>
-          </div>
-        )}
-
-        <form onSubmit={handleAddFd} className="grid grid-cols-1 sm:grid-cols-4 gap-2">
-          <input
-            type="text"
-            value={fdSeal}
-            onChange={(e) => setFdSeal(e.target.value)}
-            placeholder="Item Seal (cth: 1-900325-9)"
-            required
-            className="sm:col-span-3 px-3 py-2 text-xs font-mono-num bg-slate-50 border border-slate-200 rounded-xl focus:bg-white focus:outline-none focus:ring-2 focus:ring-[#1E3A8A]/20"
-          />
-          <button
-            type="submit"
-            className="inline-flex items-center justify-center gap-1 px-3 py-2 rounded-xl bg-[#1E3A8A] text-white text-xs font-semibold hover:bg-[#172E6E] cursor-pointer"
-          >
-            <Plus className="w-3.5 h-3.5" />
-            <span>Tambah</span>
-          </button>
-        </form>
-
         <div className="relative">
           <Search className="w-4 h-4 text-slate-400 absolute left-3 top-1/2 -translate-y-1/2" />
           <input
@@ -763,64 +507,31 @@ export function AutoCutFeederView({
           />
         </div>
 
-        <div className="overflow-auto max-h-[460px] rounded-xl border border-slate-200 bg-white">
+        <div className="overflow-auto max-h-[520px] rounded-xl border border-slate-200 bg-white">
           <table className="w-full text-left border-collapse text-xs">
             <thead className="sticky top-0 bg-slate-50 border-b border-slate-200 text-slate-600 font-semibold">
               <tr>
-                <th className="py-2.5 px-3">Item Seal</th>
-                <th className="py-2.5 px-3 text-right w-16">Aksi</th>
+                <th className="py-2.5 px-3.5 w-12 text-center">#</th>
+                <th className="py-2.5 px-3.5">Item Seal</th>
               </tr>
             </thead>
             <tbody className="divide-y divide-slate-200/70">
               {filteredFd.length === 0 ? (
                 <tr>
-                  <td colSpan={2} className="py-8 text-center text-slate-400 text-xs">
+                  <td colSpan={2} className="py-10 text-center text-slate-400 text-xs">
                     {feederList.length === 0
-                      ? 'Database kosong. Upload Excel, tambah manual, atau klik Reset Default.'
+                      ? 'Database kosong. Klik Edit Data, Upload Excel, atau Reset ke Default.'
                       : 'Tidak ada seal yang cocok dengan pencarian.'}
                   </td>
                 </tr>
               ) : (
-                filteredFd.map((item) => (
-                  <tr key={item.id} className="hover:bg-slate-50/70">
-                    <td className="py-1.5 px-3">
-                      <input
-                        type="text"
-                        value={item.seal}
-                        onChange={(e) =>
-                          onUpdateFeeder(
-                            feederList.map((f) =>
-                              f.id === item.id ? { ...f, seal: e.target.value } : f
-                            ),
-                            false
-                          )
-                        }
-                        onBlur={() => onUpdateFeeder(feederList, true)}
-                        className="w-full px-2 py-1 bg-slate-50 border border-slate-200 rounded-lg text-xs font-mono-num font-semibold focus:bg-white focus:outline-none focus:ring-1 focus:ring-[#1E3A8A]"
-                      />
+                filteredFd.map((item, idx) => (
+                  <tr key={item.id} className="hover:bg-slate-50/70 transition-colors">
+                    <td className="py-2.5 px-3.5 text-center font-mono-num text-[11px] text-slate-400">
+                      {idx + 1}
                     </td>
-                    <td className="py-1.5 px-3 text-right">
-                      <button
-                        type="button"
-                        onClick={() => {
-                          if (onDeleteFeederItem) {
-                            onDeleteFeederItem(item);
-                          } else {
-                            onUpdateFeeder(
-                              feederList.filter((f) => f.id !== item.id),
-                              true
-                            );
-                          }
-                          showFdNotice(
-                            'ok',
-                            `Wire Seal "${item.seal}" dipindahkan ke Recycle Bin (dapat di-restore).`
-                          );
-                        }}
-                        className="p-1.5 rounded-lg text-red-600 hover:bg-red-50 cursor-pointer"
-                        aria-label={`Hapus ${item.seal}`}
-                      >
-                        <Trash2 className="w-3.5 h-3.5" />
-                      </button>
+                    <td className="py-2.5 px-3.5 font-mono-num font-semibold text-slate-900">
+                      {item.seal}
                     </td>
                   </tr>
                 ))
@@ -829,6 +540,26 @@ export function AutoCutFeederView({
           </table>
         </div>
       </section>
+
+      {/* Floating Bulk Edit / Excel Confirm / Reset Confirm Modal */}
+      {bulkModal && (
+        <MasterListBulkEditModal
+          kind={bulkModal.kind}
+          currentAutoCut={autoCutList}
+          currentFeeder={feederList}
+          initialStage={bulkModal.initialStage}
+          source={bulkModal.source}
+          sourceFileName={bulkModal.sourceFileName}
+          sourceSheetName={bulkModal.sourceSheetName}
+          uploadedAutoCutItems={bulkModal.uploadedAutoCutItems}
+          uploadedFeederItems={bulkModal.uploadedFeederItems}
+          resetTargetAutoCut={bulkModal.resetTargetAutoCut}
+          resetTargetFeeder={bulkModal.resetTargetFeeder}
+          onCommitAutoCut={handleCommitAc}
+          onCommitFeeder={handleCommitFd}
+          onClose={() => setBulkModal(null)}
+        />
+      )}
     </div>
   );
 }

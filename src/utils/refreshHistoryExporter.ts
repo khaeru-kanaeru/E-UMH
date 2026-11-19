@@ -1,4 +1,5 @@
 import XLSX from 'xlsx-js-style';
+import { getAllowanceModeLabel } from '../engine/umhCalculator';
 import { RefreshHistoryEntry } from '../types/umh';
 
 const BORDER_THIN = {
@@ -156,7 +157,7 @@ export function exportRefreshHistoryExcel(entry: RefreshHistoryEntry): void {
         idx + 1,
         assy.assyNo,
         assy.customer || '-',
-        assy.allowanceMode === 'by_process' ? 'By Proses' : 'By Hasil Akhir',
+        getAllowanceModeLabel(assy.allowanceMode, 'short'),
         assy.processDiffs.length,
         Number(assy.beforeBaseSec.toFixed(3)),
         Number(assy.afterBaseSec.toFixed(3)),

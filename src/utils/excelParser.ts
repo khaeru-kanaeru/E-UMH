@@ -1723,6 +1723,7 @@ export function parsePartMasterFromGrid(grid: unknown[][]): {
   const isMetaKeyPfd = (h: string) => h.includes('ALLOWANCE') || h.includes('PFD');
   const isMetaKeyCust = (h: string) => h === 'CUSTOMER' || h.includes('CUSTOMER');
   const isMetaKeyMode = (h: string) => h.includes('METODE');
+  const isMetaKeyLot = (h: string) => h === 'LOT' || h === 'LOT SIZE' || h === 'QTY LOT' || h === 'JUMLAH LOT';
 
   const isAnyMetaLabel = (h: string) =>
     !h ||
@@ -1733,6 +1734,7 @@ export function parsePartMasterFromGrid(grid: unknown[][]): {
     isMetaKeyPfd(h) ||
     isMetaKeyCust(h) ||
     isMetaKeyMode(h) ||
+    isMetaKeyLot(h) ||
     h === 'ASSY NAME' ||
     h === 'PART NAME' ||
     h === 'MODEL' ||
@@ -1756,7 +1758,9 @@ export function parsePartMasterFromGrid(grid: unknown[][]): {
 
   const applyMode = (target: Partial<AssyParams>, modeStr: string) => {
     const m = modeStr.toLowerCase();
-    if (m.includes('hasil') || m.includes('final') || m.startsWith('2')) {
+    if (m.includes('tanpa') || m === 'none' || m.startsWith('0')) {
+      target.allowanceMode = 'none' as AllowanceMode;
+    } else if (m.includes('hasil') || m.includes('final') || m.startsWith('2')) {
       target.allowanceMode = 'by_final' as AllowanceMode;
     } else if (m.includes('proses') || m.includes('process') || m.startsWith('1')) {
       target.allowanceMode = 'by_process' as AllowanceMode;
@@ -1793,7 +1797,8 @@ export function parsePartMasterFromGrid(grid: unknown[][]): {
       const isCct = isMetaKeyCct(keyNorm);
       const isPfd = isMetaKeyPfd(keyNorm);
       const isMode = isMetaKeyMode(keyNorm);
-      if (!isAssy && !isCust && !isCct && !isPfd && !isMode) continue;
+      const isLot = isMetaKeyLot(keyNorm);
+      if (!isAssy && !isCust && !isCct && !isPfd && !isMode && !isLot) continue;
 
       // Check if row r is horizontal table header (2+ distinct metadata keys on same row with no ":" separator)
       let otherHeaderKeysOnRow = 0;
@@ -1805,7 +1810,7 @@ export function parsePartMasterFromGrid(grid: unknown[][]): {
           break;
         }
         const nk = norm[k];
-        if (nk && (isMetaKeyAssy(nk) || isMetaKeyCust(nk) || isMetaKeyCct(nk) || isMetaKeyPfd(nk) || isMetaKeyMode(nk))) {
+        if (nk && (isMetaKeyAssy(nk) || isMetaKeyCust(nk) || isMetaKeyCct(nk) || isMetaKeyPfd(nk) || isMetaKeyMode(nk) || isMetaKeyLot(nk))) {
           otherHeaderKeysOnRow++;
         }
       }
@@ -1839,6 +1844,9 @@ export function parsePartMasterFromGrid(grid: unknown[][]): {
       } else if (isCct && !verticalExtracted.masterCct) {
         const cNum = parseNumeric(foundVal);
         if (cNum > 0) verticalExtracted.masterCct = Math.round(cNum);
+      } else if (isLot && !verticalExtracted.lot) {
+        const lNum = parseNumeric(foundVal);
+        if (lNum > 0) verticalExtracted.lot = Math.round(lNum);
       } else if (isPfd && verticalExtracted.pfdAllowancePct === undefined) {
         verticalExtracted.pfdAllowancePct = parsePercentValue(foundVal);
       } else if (isMode && !verticalExtracted.allowanceMode) {
@@ -1859,6 +1867,7 @@ export function parsePartMasterFromGrid(grid: unknown[][]): {
 
     const assyCols: number[] = [];
     const cctCols: number[] = [];
+    const lotCols: number[] = [];
     const pfdCols: number[] = [];
     const custCols: number[] = [];
     const modeCols: number[] = [];
@@ -1868,12 +1877,13 @@ export function parsePartMasterFromGrid(grid: unknown[][]): {
       if (!h) continue;
       if (isMetaKeyAssy(h)) assyCols.push(c);
       if (isMetaKeyCct(h)) cctCols.push(c);
+      if (isMetaKeyLot(h)) lotCols.push(c);
       if (isMetaKeyPfd(h)) pfdCols.push(c);
       if (isMetaKeyCust(h)) custCols.push(c);
       if (isMetaKeyMode(h)) modeCols.push(c);
     }
 
-    if (assyCols.length > 0 || cctCols.length > 0 || pfdCols.length > 0) {
+    if (assyCols.length > 0 || cctCols.length > 0 || pfdCols.length > 0 || lotCols.length > 0) {
       const valRow = grid[r + 1] || [];
       const extracted: Partial<AssyParams> = {};
 
@@ -1884,6 +1894,12 @@ export function parsePartMasterFromGrid(grid: unknown[][]): {
       if (cStr) {
         const cNum = parseNumeric(cStr);
         if (cNum > 0) extracted.masterCct = Math.round(cNum);
+      }
+
+      const lStr = pickValFromCols(valRow, lotCols);
+      if (lStr) {
+        const lNum = parseNumeric(lStr);
+        if (lNum > 0) extracted.lot = Math.round(lNum);
       }
 
       const pfdStr = pickValFromCols(valRow, pfdCols);

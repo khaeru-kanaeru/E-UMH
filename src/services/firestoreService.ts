@@ -14,11 +14,16 @@ import {
   where,
   writeBatch,
 } from 'firebase/firestore';
+import { getAllowSecForMode } from '../engine/umhCalculator';
 import { OperationType, db, handleFirestoreError } from '../firebase';
 import {
   AssyRecord,
   AutoCutItem,
   FeederItem,
+  MasterChangeCategory,
+  MasterChangeDiffItem,
+  MasterChangeHistoryEntry,
+  MasterChangeSource,
   ProcessLogicDisc,
   RecycleBinItem,
   RecycleBinItemType,
@@ -272,10 +277,12 @@ function buildRecycleBinFirestoreDoc(uid: string, item: RecycleBinItem, scopedBi
 }
 
 export function buildRecycleBinItemFromAssy(record: AssyRecord): RecycleBinItem {
-  const allowSec =
-    record.params.allowanceMode === 'by_process'
-      ? record.calculation.totalAllowByProcessSec
-      : record.calculation.totalAllowByFinalSec;
+  const allowSec = getAllowSecForMode(
+    record.params.allowanceMode,
+    record.calculation.totalBaseSec,
+    record.calculation.totalAllowByProcessSec,
+    record.calculation.totalAllowByFinalSec
+  );
   const allowHr = (allowSec / 3600).toFixed(4);
   return {
     id: createLocalRecycleId('bin_assy'),
@@ -951,30 +958,85 @@ export async function permanentlyDeleteInPlaceAssyInCloud(
   }
 }
 
+function isMasterLogDoc(d: Record<string, unknown>): boolean {
+  const diffs = d.affectedDiffs;
+  return (
+    Array.isArray(diffs) &&
+    diffs.length > 0 &&
+    typeof diffs[0] === 'object' &&
+    diffs[0] !== null &&
+    (diffs[0] as Record<string, unknown>)._masterLog === true
+  );
+}
+
+function parseMasterHistoryDoc(
+  docId: string,
+  d: Record<string, unknown>
+): MasterChangeHistoryEntry {
+  const meta = ((Array.isArray(d.affectedDiffs) ? d.affectedDiffs[0] : {}) || {}) as Record<
+    string,
+    unknown
+  >;
+  const rawChanges = Array.isArray(meta.changes)
+    ? (meta.changes as MasterChangeDiffItem[])
+    : [];
+  return {
+    id: String(d.id || docId),
+    changedAt: tsToIso(d.refreshedAt),
+    responsibleName: String(d.responsibleName || 'PIC'),
+    category: (meta.category as MasterChangeCategory) || 'std_params',
+    source: (meta.source as MasterChangeSource) || 'manual_edit',
+    ...(typeof meta.sourceFileName === 'string' && meta.sourceFileName
+      ? { sourceFileName: meta.sourceFileName }
+      : {}),
+    ...(typeof meta.note === 'string' && meta.note ? { note: meta.note } : {}),
+    totalItemsCount: Number(d.totalSelectedCount) || 0,
+    addedCount: Number(meta.addedCount) || 0,
+    modifiedCount: Number(meta.modifiedCount) || 0,
+    removedCount: Number(meta.removedCount) || 0,
+    changes: rawChanges,
+  };
+}
+
 export function subscribeRefreshHistory(
   uid: string,
   onData: (entries: RefreshHistoryEntry[]) => void,
-  onError: (err: Error) => void
+  onError: (err: Error) => void,
+  onMasterHistory?: (entries: MasterChangeHistoryEntry[]) => void
 ) {
   const path = 'refreshHistory';
   const q = query(collection(db, 'refreshHistory'), where('ownerId', '==', uid));
   return onSnapshot(
     q,
     (snap) => {
-      const entries: RefreshHistoryEntry[] = snap.docs.map((docSnap) => {
-        const d = docSnap.data();
-        return {
-          id: String(d.id || docSnap.id),
-          refreshedAt: tsToIso(d.refreshedAt),
-          responsibleName: String(d.responsibleName || ''),
-          totalSelectedCount: Number(d.totalSelectedCount) || 0,
-          affectedAssyCount: Number(d.affectedAssyCount) || 0,
-          unaffectedAssyCount: Number(d.unaffectedAssyCount) || 0,
-          affectedDiffs: Array.isArray(d.affectedDiffs) ? d.affectedDiffs : [],
-        };
+      const refreshEntries: RefreshHistoryEntry[] = [];
+      const masterEntries: MasterChangeHistoryEntry[] = [];
+
+      snap.docs.forEach((docSnap) => {
+        const d = docSnap.data() as Record<string, unknown>;
+        if (isMasterLogDoc(d)) {
+          masterEntries.push(parseMasterHistoryDoc(docSnap.id, d));
+        } else {
+          refreshEntries.push({
+            id: String(d.id || docSnap.id),
+            refreshedAt: tsToIso(d.refreshedAt),
+            responsibleName: String(d.responsibleName || ''),
+            totalSelectedCount: Number(d.totalSelectedCount) || 0,
+            affectedAssyCount: Number(d.affectedAssyCount) || 0,
+            unaffectedAssyCount: Number(d.unaffectedAssyCount) || 0,
+            affectedDiffs: Array.isArray(d.affectedDiffs)
+              ? (d.affectedDiffs as RefreshHistoryEntry['affectedDiffs'])
+              : [],
+          });
+        }
       });
-      entries.sort((a, b) => b.refreshedAt.localeCompare(a.refreshedAt));
-      onData(entries);
+
+      refreshEntries.sort((a, b) => b.refreshedAt.localeCompare(a.refreshedAt));
+      masterEntries.sort((a, b) => b.changedAt.localeCompare(a.changedAt));
+      onData(refreshEntries);
+      if (onMasterHistory) {
+        onMasterHistory(masterEntries);
+      }
     },
     (error) => {
       try {
@@ -1007,6 +1069,93 @@ export async function createRefreshHistoryInCloud(
     return { ...entry, id: scopedId };
   } catch (error) {
     handleFirestoreError(error, OperationType.CREATE, path);
+  }
+}
+
+export async function createMasterChangeHistoryInCloud(
+  uid: string,
+  entry: MasterChangeHistoryEntry
+): Promise<MasterChangeHistoryEntry> {
+  const scopedId = toScopedDocId(uid, entry.id);
+  const path = `refreshHistory/${scopedId}`;
+  const totalChanged = entry.addedCount + entry.modifiedCount + entry.removedCount;
+  const clampedTotal = Math.max(0, Math.min(1000, entry.totalItemsCount));
+  const clampedChanged = Math.max(0, Math.min(1000, totalChanged));
+  const clampedUnchanged = Math.max(0, Math.min(1000, Math.max(0, clampedTotal - clampedChanged)));
+
+  try {
+    await setDoc(doc(db, 'refreshHistory', scopedId), {
+      id: scopedId,
+      ownerId: uid,
+      refreshedAt: serverTimestamp(),
+      responsibleName: (entry.responsibleName || 'PIC').slice(0, 120),
+      totalSelectedCount: clampedTotal,
+      affectedAssyCount: clampedChanged,
+      unaffectedAssyCount: clampedUnchanged,
+      affectedDiffs: [
+        cleanForFirestore({
+          _masterLog: true,
+          category: entry.category,
+          source: entry.source,
+          ...(entry.sourceFileName ? { sourceFileName: entry.sourceFileName.slice(0, 160) } : {}),
+          ...(entry.note ? { note: entry.note.slice(0, 240) } : {}),
+          addedCount: entry.addedCount,
+          modifiedCount: entry.modifiedCount,
+          removedCount: entry.removedCount,
+          changes: entry.changes.slice(0, 500),
+        }),
+      ],
+      createdAt: serverTimestamp(),
+    });
+    return { ...entry, id: scopedId };
+  } catch (error) {
+    handleFirestoreError(error, OperationType.CREATE, path);
+  }
+}
+
+export async function deleteMasterChangeHistoryInCloud(
+  uid: string,
+  entryId: string
+): Promise<void> {
+  const scopedId = toScopedDocId(uid, entryId);
+  const path = `refreshHistory/${scopedId}`;
+  try {
+    const ownedSnap = await getDocs(
+      query(collection(db, 'refreshHistory'), where('ownerId', '==', uid))
+    );
+    if (ownedSnap.docs.some((d) => d.id === scopedId)) {
+      await deleteDoc(doc(db, 'refreshHistory', scopedId));
+    }
+  } catch (error) {
+    handleFirestoreError(error, OperationType.DELETE, path);
+  }
+}
+
+export async function clearMasterChangeHistoryInCloud(
+  uid: string,
+  entryIds: string[]
+): Promise<void> {
+  if (entryIds.length === 0) return;
+  const path = 'refreshHistory';
+  try {
+    const ownedSnap = await getDocs(
+      query(collection(db, 'refreshHistory'), where('ownerId', '==', uid))
+    );
+    const existingIds = new Set(ownedSnap.docs.map((d) => d.id));
+    const toDelete = entryIds
+      .map((id) => toScopedDocId(uid, id))
+      .filter((sid) => existingIds.has(sid));
+
+    const CHUNK = 200;
+    for (let i = 0; i < toDelete.length; i += CHUNK) {
+      const batch = writeBatch(db);
+      toDelete.slice(i, i + CHUNK).forEach((sid) => {
+        batch.delete(doc(db, 'refreshHistory', sid));
+      });
+      await batch.commit();
+    }
+  } catch (error) {
+    handleFirestoreError(error, OperationType.DELETE, path);
   }
 }
 

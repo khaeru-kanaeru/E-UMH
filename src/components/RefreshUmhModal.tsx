@@ -13,7 +13,12 @@ import {
   UserCheck,
   X,
 } from 'lucide-react';
-import { calculateUmh, getVariantResult } from '../engine/umhCalculator';
+import {
+  calculateUmh,
+  getAllowanceModeLabel,
+  getAllowSecForMode,
+  getVariantResult,
+} from '../engine/umhCalculator';
 import {
   AssyRecord,
   AssyRefreshDiff,
@@ -343,14 +348,18 @@ export function RefreshUmhModal({
                     {filteredRecords.map((rec) => {
                       const isChecked = selectedIds.has(rec.id);
                       const smvCalc = getVariantResult(rec, 'smv');
-                      const allowSec =
-                        rec.params.allowanceMode === 'by_process'
-                          ? rec.calculation.totalAllowByProcessSec
-                          : rec.calculation.totalAllowByFinalSec;
-                      const smvAllowSec =
-                        rec.params.allowanceMode === 'by_process'
-                          ? smvCalc.totalAllowByProcessSec
-                          : smvCalc.totalAllowByFinalSec;
+                      const allowSec = getAllowSecForMode(
+                        rec.params.allowanceMode,
+                        rec.calculation.totalBaseSec,
+                        rec.calculation.totalAllowByProcessSec,
+                        rec.calculation.totalAllowByFinalSec
+                      );
+                      const smvAllowSec = getAllowSecForMode(
+                        rec.params.allowanceMode,
+                        smvCalc.totalBaseSec,
+                        smvCalc.totalAllowByProcessSec,
+                        smvCalc.totalAllowByFinalSec
+                      );
 
                       return (
                         <tr
@@ -381,9 +390,7 @@ export function RefreshUmhModal({
                             </span>
                             <span className="text-slate-400 mx-1.5">·</span>
                             <span className="text-slate-500">
-                              {rec.params.allowanceMode === 'by_process'
-                                ? 'By Proses'
-                                : 'By Hasil Akhir'}
+                              {getAllowanceModeLabel(rec.params.allowanceMode, 'short')}
                             </span>
                           </td>
                           <td className="py-3 px-3 text-right font-mono-num text-slate-700">

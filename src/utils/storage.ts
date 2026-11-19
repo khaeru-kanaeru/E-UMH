@@ -11,6 +11,7 @@ import {
   AssyRecord,
   AutoCutItem,
   FeederItem,
+  MasterChangeHistoryEntry,
   RecycleBinItem,
   RefreshHistoryEntry,
   StdDatabase,
@@ -22,6 +23,7 @@ const KEY_AUTOCUT = 'wh_acl_list_v2';
 const KEY_FEEDER = 'wh_fl_list_v2';
 const KEY_PENDING_SYNC = 'wh_pending_master_sync_v2';
 const KEY_REFRESH_HISTORY = 'wh_umh_refresh_history_v2';
+const KEY_MASTER_HISTORY = 'wh_master_change_history_v1';
 const KEY_LAST_PIC = 'wh_umh_last_pic_v2';
 const KEY_RECYCLE_BIN = 'wh_recycle_bin_v2';
 
@@ -233,6 +235,26 @@ export function loadRecycleBin(): RecycleBinItem[] {
 export function saveRecycleBin(items: RecycleBinItem[]): void {
   try {
     localStorage.setItem(KEY_RECYCLE_BIN, JSON.stringify(items));
+  } catch {
+    // ignore storage errors
+  }
+}
+
+export function loadMasterChangeHistory(): MasterChangeHistoryEntry[] {
+  try {
+    const raw = localStorage.getItem(KEY_MASTER_HISTORY);
+    if (!raw) return [];
+    const parsed = JSON.parse(raw) as MasterChangeHistoryEntry[];
+    if (Array.isArray(parsed)) return parsed;
+  } catch {
+    // ignore parse failure
+  }
+  return [];
+}
+
+export function saveMasterChangeHistory(entries: MasterChangeHistoryEntry[]): void {
+  try {
+    localStorage.setItem(KEY_MASTER_HISTORY, JSON.stringify(entries));
   } catch {
     // ignore storage errors
   }

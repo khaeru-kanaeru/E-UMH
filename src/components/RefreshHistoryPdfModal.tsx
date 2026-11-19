@@ -1,4 +1,5 @@
 import { Printer, X } from 'lucide-react';
+import { getAllowanceModeLabel } from '../engine/umhCalculator';
 import { RefreshHistoryEntry } from '../types/umh';
 import { formatRefreshDateTime } from '../utils/refreshHistoryExporter';
 import { formatDeltaSec } from './RefreshDiffViewer';
@@ -130,7 +131,7 @@ export function RefreshHistoryPdfModal({ entry, onClose }: RefreshHistoryPdfModa
                     </td>
                     <td className="py-1.5 px-2 text-slate-700">
                       {assy.customer || '-'} ·{' '}
-                      {assy.allowanceMode === 'by_process' ? 'By Proses' : 'By Hasil Akhir'}
+                      {getAllowanceModeLabel(assy.allowanceMode, 'short')}
                     </td>
                     <td className="py-1.5 px-2 text-center font-mono-num">
                       {assy.processDiffs.length}
@@ -185,7 +186,7 @@ export function RefreshHistoryPdfModal({ entry, onClose }: RefreshHistoryPdfModa
                       </span>
                       <span className="ml-2 text-xs text-slate-600">
                         {assy.customer || '-'} ·{' '}
-                        {assy.allowanceMode === 'by_process' ? 'By Proses' : 'By Hasil Akhir'}
+                        {getAllowanceModeLabel(assy.allowanceMode, 'short')}
                       </span>
                     </div>
                     <div className="flex flex-wrap items-center gap-4 text-[11px] font-mono-num">

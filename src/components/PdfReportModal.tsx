@@ -1,6 +1,10 @@
 import { useState } from 'react';
 import { Languages, Printer, X } from 'lucide-react';
-import { getVariantResult } from '../engine/umhCalculator';
+import {
+  getAllowSecForMode,
+  getEffectiveLot,
+  getVariantResult,
+} from '../engine/umhCalculator';
 import { AllowanceMode, AssyRecord, CalculationVariant, UiLang } from '../types/umh';
 import {
   translateBasis,
@@ -25,12 +29,16 @@ export function PdfReportModal({
 }: PdfReportModalProps) {
   const [uiLang, setUiLang] = useState<UiLang>(lang);
   const { params } = record;
+  const effectiveLot = getEffectiveLot(params.lot);
+  const effPct = mode === 'none' ? 0 : params.pfdAllowancePct || 0;
 
   const regCalc = getVariantResult(record, 'reg');
   const smvCalc = getVariantResult(record, 'smv');
 
   const modeTitle =
-    mode === 'by_process'
+    mode === 'none'
+      ? '0. Tanpa Allowance (Base 0%)'
+      : mode === 'by_process'
       ? '1. Allowance By Proses (Merata)'
       : '2. Allowance By Hasil Akhir (Justified Bobot)';
 
@@ -40,12 +48,18 @@ export function PdfReportModal({
     compareCalc: CalculationVariant,
     isSecondSection: boolean
   ) => {
-    const totalAllowSec =
-      mode === 'by_process' ? calc.totalAllowByProcessSec : calc.totalAllowByFinalSec;
-    const compareAllowSec =
-      mode === 'by_process'
-        ? compareCalc.totalAllowByProcessSec
-        : compareCalc.totalAllowByFinalSec;
+    const totalAllowSec = getAllowSecForMode(
+      mode,
+      calc.totalBaseSec,
+      calc.totalAllowByProcessSec,
+      calc.totalAllowByFinalSec
+    );
+    const compareAllowSec = getAllowSecForMode(
+      mode,
+      compareCalc.totalBaseSec,
+      compareCalc.totalAllowByProcessSec,
+      compareCalc.totalAllowByFinalSec
+    );
     const activeProcesses = calc.processes.filter((p) => p.active);
 
     const badgeText =
@@ -67,12 +81,12 @@ export function PdfReportModal({
               ASSY {params.assyNo}
             </h1>
             <p className="text-xs text-slate-200 mt-1">
-              Customer: {params.customer || '-'} · Metode: {modeTitle} · PFD: {params.pfdAllowancePct}%
+              Customer: {params.customer || '-'} · Metode: {modeTitle} · PFD: {effPct}% · LOT: {effectiveLot}
             </p>
           </div>
           <div className="text-right text-xs text-slate-200 font-mono-num space-y-0.5">
             <div>Tanggal: {new Date().toLocaleDateString('id-ID')}</div>
-            <div>Master CCT: {params.masterCct} CCT</div>
+            <div>Master CCT: {params.masterCct} CCT · LOT {effectiveLot}</div>
             <div>Sirkuit PPCS: {record.ppcsList.length}</div>
           </div>
         </div>
@@ -147,10 +161,12 @@ export function PdfReportModal({
             </thead>
             <tbody className="divide-y divide-slate-200">
               {calc.processes.map((proc) => {
-                const allowSec =
-                  mode === 'by_process'
-                    ? proc.allowByProcessSec
-                    : proc.allowByFinalSec;
+                const allowSec = getAllowSecForMode(
+                  mode,
+                  proc.baseSec,
+                  proc.allowByProcessSec,
+                  proc.allowByFinalSec
+                );
                 const procName = translateProcessName(
                   proc.processId,
                   proc.processName,
@@ -200,10 +216,12 @@ export function PdfReportModal({
 
           <div className="grid grid-cols-1 gap-4">
             {activeProcesses.map((proc) => {
-              const procAllowSec =
-                mode === 'by_process'
-                  ? proc.allowByProcessSec
-                  : proc.allowByFinalSec;
+              const procAllowSec = getAllowSecForMode(
+                mode,
+                proc.baseSec,
+                proc.allowByProcessSec,
+                proc.allowByFinalSec
+              );
               const procName = translateProcessName(
                 proc.processId,
                 proc.processName,
@@ -239,10 +257,12 @@ export function PdfReportModal({
                     </thead>
                     <tbody className="divide-y divide-slate-100">
                       {proc.subSteps.map((sub) => {
-                        const subAllow =
-                          mode === 'by_process'
-                            ? sub.allowByProcessSec
-                            : sub.allowByFinalSec;
+                        const subAllow = getAllowSecForMode(
+                          mode,
+                          sub.baseSec,
+                          sub.allowByProcessSec,
+                          sub.allowByFinalSec
+                        );
                         return (
                           <tr key={sub.id}>
                             <td className="py-1 px-1.5 font-medium text-slate-600">

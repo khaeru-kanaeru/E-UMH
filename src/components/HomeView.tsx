@@ -13,7 +13,12 @@ import {
   YAxis,
 } from 'recharts';
 import { ArrowRight, Database, FileSpreadsheet, Layers, Sliders } from 'lucide-react';
-import { getVariantResult } from '../engine/umhCalculator';
+import {
+  getAllowanceModeLabel,
+  getAllowSecForMode,
+  getEffectiveLot,
+  getVariantResult,
+} from '../engine/umhCalculator';
 import { AssyRecord, NavTab } from '../types/umh';
 
 interface HomeViewProps {
@@ -40,9 +45,12 @@ interface TrendPoint {
 
 function getActiveAllowSec(rec: AssyRecord, variant: 'reg' | 'smv'): number {
   const calc = getVariantResult(rec, variant);
-  return rec.params.allowanceMode === 'by_final'
-    ? calc.totalAllowByFinalSec
-    : calc.totalAllowByProcessSec;
+  return getAllowSecForMode(
+    rec.params.allowanceMode,
+    calc.totalBaseSec,
+    calc.totalAllowByProcessSec,
+    calc.totalAllowByFinalSec
+  );
 }
 
 export function HomeView({
@@ -104,8 +112,12 @@ export function HomeView({
 
       const regCalc = getVariantResult(rec, 'reg');
       regCalc.processes.forEach((p) => {
-        const allowSec =
-          rec.params.allowanceMode === 'by_final' ? p.allowByFinalSec : p.allowByProcessSec;
+        const allowSec = getAllowSecForMode(
+          rec.params.allowanceMode,
+          p.baseSec,
+          p.allowByProcessSec,
+          p.allowByFinalSec
+        );
         if (allowSec <= 0) return;
         const key = `${p.processId}_${p.processName}`;
         const prev = processTotals.get(key);
@@ -335,28 +347,28 @@ export function HomeView({
 
       {/* UMH Efficiency & Trend Analytics (Recharts) */}
       <section className="glass-surface rounded-2xl p-6 space-y-5">
-        <div className="flex flex-col lg:flex-row lg:items-center justify-between gap-4 pb-4 border-b border-slate-200">
-          <div>
-            <p className="text-xs font-medium text-[#1E3A8A]">
+        <div className="flex flex-col sm:flex-row sm:items-start justify-between gap-4 pb-4 border-b border-slate-200">
+          <div className="min-w-0">
+            <p className="text-[11px] font-semibold text-[#1E3A8A]">
               生産効率トレンド · Pemantauan Efisiensi Produksi
             </p>
             <h2 className="text-lg font-bold text-slate-900 mt-0.5">
               Tren Rata-Rata UMH &amp; Kontribusi Proses
             </h2>
             <p className="text-xs text-slate-500 mt-0.5">
-              Perbandingan UMH REG, SMV, dan rata-rata kumulatif dari{' '}
+              Perbandingan UMH REG, SMV, dan rata-rata kumulatif ·{' '}
               <span className="font-mono-num font-semibold text-slate-700">{records.length}</span>{' '}
-              record Assy tersimpan.
+              Assy
             </p>
           </div>
 
           {records.length > 0 && (
-            <div className="flex flex-wrap items-center gap-2 shrink-0">
+            <div className="flex items-center gap-2 shrink-0 self-start">
               <div className="inline-flex items-center p-1 rounded-xl bg-slate-100 border border-slate-200">
                 <button
                   type="button"
                   onClick={() => setGroupMode('by_assy')}
-                  className={`px-3 py-1.5 rounded-lg text-xs font-semibold transition-colors whitespace-nowrap cursor-pointer ${
+                  className={`px-3 py-1 rounded-lg text-xs font-semibold transition-colors whitespace-nowrap cursor-pointer ${
                     groupMode === 'by_assy'
                       ? 'bg-white text-slate-900 shadow-xs'
                       : 'text-slate-600 hover:text-slate-900'
@@ -367,7 +379,7 @@ export function HomeView({
                 <button
                   type="button"
                   onClick={() => setGroupMode('by_date')}
-                  className={`px-3 py-1.5 rounded-lg text-xs font-semibold transition-colors whitespace-nowrap cursor-pointer ${
+                  className={`px-3 py-1 rounded-lg text-xs font-semibold transition-colors whitespace-nowrap cursor-pointer ${
                     groupMode === 'by_date'
                       ? 'bg-white text-slate-900 shadow-xs'
                       : 'text-slate-600 hover:text-slate-900'
@@ -377,28 +389,30 @@ export function HomeView({
                 </button>
               </div>
 
+              <span className="hidden sm:block h-5 w-px bg-slate-200" aria-hidden="true" />
+
               <div className="inline-flex items-center p-1 rounded-xl bg-slate-100 border border-slate-200">
                 <button
                   type="button"
                   onClick={() => setUnitMode('hour')}
-                  className={`px-3 py-1.5 rounded-lg text-xs font-semibold transition-colors whitespace-nowrap cursor-pointer ${
+                  className={`px-3 py-1 rounded-lg text-xs font-semibold transition-colors whitespace-nowrap cursor-pointer ${
                     unitMode === 'hour'
                       ? 'bg-white text-slate-900 shadow-xs'
                       : 'text-slate-600 hover:text-slate-900'
                   }`}
                 >
-                  Hour (hr)
+                  Hour
                 </button>
                 <button
                   type="button"
                   onClick={() => setUnitMode('sec')}
-                  className={`px-3 py-1.5 rounded-lg text-xs font-semibold transition-colors whitespace-nowrap cursor-pointer ${
+                  className={`px-3 py-1 rounded-lg text-xs font-semibold transition-colors whitespace-nowrap cursor-pointer ${
                     unitMode === 'sec'
                       ? 'bg-white text-slate-900 shadow-xs'
                       : 'text-slate-600 hover:text-slate-900'
                   }`}
                 >
-                  Sec (s)
+                  Sec
                 </button>
               </div>
             </div>
@@ -761,7 +775,9 @@ export function HomeView({
 
           <div className="grid grid-cols-2 lg:grid-cols-4 gap-6 pt-5 lg:divide-x lg:divide-slate-200">
             <div className="lg:pr-4">
-              <p className="text-xs text-slate-500">Base Cycle (0%)</p>
+              <p className="text-xs text-slate-500">
+                Base Cycle (0%) · LOT {getEffectiveLot(latestRecord.params.lot)}
+              </p>
               <p className="text-2xl font-bold font-mono-num text-slate-900 mt-1">
                 {latestRecord.calculation.totalBaseSec.toFixed(2)}{' '}
                 <span className="text-xs font-medium text-slate-500">sec</span>
@@ -769,17 +785,20 @@ export function HomeView({
             </div>
             <div className="lg:px-6">
               <p className="text-xs text-slate-500">
-                Allow By Proses (+{latestRecord.params.pfdAllowancePct}%)
+                {getAllowanceModeLabel(latestRecord.params.allowanceMode, 'short')}
+                {latestRecord.params.allowanceMode !== 'none'
+                  ? ` (+${latestRecord.params.pfdAllowancePct}%)`
+                  : ' (0%)'}
               </p>
               <p className="text-2xl font-bold font-mono-num text-[#047857] mt-1">
-                {latestRecord.calculation.totalAllowByProcessSec.toFixed(2)}{' '}
+                {getActiveAllowSec(latestRecord, 'reg').toFixed(2)}{' '}
                 <span className="text-xs font-medium text-slate-500">sec</span>
               </p>
             </div>
             <div className="lg:px-6">
               <p className="text-xs text-slate-500">Standard UMH REG (Hour)</p>
               <p className="text-2xl font-bold font-mono-num text-slate-900 mt-1">
-                {(latestRecord.calculation.totalAllowByFinalSec / 3600).toFixed(4)}{' '}
+                {(getActiveAllowSec(latestRecord, 'reg') / 3600).toFixed(4)}{' '}
                 <span className="text-xs font-medium text-slate-500">hr</span>
               </p>
             </div>
@@ -788,9 +807,7 @@ export function HomeView({
                 UMH SMV (Hour) · {latestRecord.params.masterCct} CCT
               </p>
               <p className="text-2xl font-bold font-mono-num text-[#1E3A8A] mt-1">
-                {(
-                  getVariantResult(latestRecord, 'smv').totalAllowByFinalSec / 3600
-                ).toFixed(4)}{' '}
+                {(getActiveAllowSec(latestRecord, 'smv') / 3600).toFixed(4)}{' '}
                 <span className="text-xs font-medium text-slate-500">hr</span>
               </p>
             </div>

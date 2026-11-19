@@ -1,6 +1,7 @@
 import { DEFAULT_PROCESS_DISCS } from '../data/defaultProcessDiscs';
 import { PROCESS_DIFF_MAP } from '../data/defaultStdDb';
 import {
+  AllowanceMode,
   AssyInputPayload,
   AssyRecord,
   AutoCutItem,
@@ -16,12 +17,45 @@ import {
 } from '../types/umh';
 import { buildProcessDiscContext, executeProcessDisc } from '../utils/discEngine';
 
-export function computeLotMetrics(_yearQty?: number): LotMetrics {
+export const DEFAULT_LOT_SIZE = 15;
+
+export function getEffectiveLot(lotInput?: number): number {
+  return typeof lotInput === 'number' && Number.isFinite(lotInput) && lotInput > 0
+    ? Math.max(1, lotInput)
+    : DEFAULT_LOT_SIZE;
+}
+
+export function getAllowanceModeLabel(
+  mode: AllowanceMode,
+  style: 'short' | 'numbered' = 'short'
+): string {
+  if (mode === 'none') {
+    return style === 'numbered' ? '0. Tanpa Allowance' : 'Tanpa Allowance';
+  }
+  if (mode === 'by_final') {
+    return style === 'numbered' ? '2. By Hasil Akhir' : 'By Hasil Akhir';
+  }
+  return style === 'numbered' ? '1. By Proses' : 'By Proses';
+}
+
+export function getAllowSecForMode(
+  mode: AllowanceMode,
+  baseSec: number,
+  allowByProcessSec: number,
+  allowByFinalSec: number
+): number {
+  if (mode === 'none') return baseSec;
+  if (mode === 'by_final') return allowByFinalSec;
+  return allowByProcessSec;
+}
+
+export function computeLotMetrics(lotInput?: number): LotMetrics {
+  const effLot = getEffectiveLot(lotInput);
   return {
     monthlyQty: 0,
     dailyQty: 0,
-    rawLot: 1,
-    effectiveLot: 1,
+    rawLot: effLot,
+    effectiveLot: effLot,
     isAutoCutActive: true,
   };
 }
@@ -184,7 +218,7 @@ export function calculateUmh(
   feederList: FeederItem[]
 ): CalculationResult {
   const { ppcsList: ppcs } = payload;
-  const lotMetrics = computeLotMetrics(payload.params.yearQty);
+  const lotMetrics = computeLotMetrics(payload.params.lot);
 
   const activeDiscs = [...(stdDb.processDiscs && stdDb.processDiscs.length > 0
     ? stdDb.processDiscs
@@ -241,5 +275,115 @@ export function getVariantResult(
     totalAllowByFinalSec: calculation.totalAllowByFinalSec,
     processes: calculation.processes,
     twistBundlesCount: calculation.twistBundlesCount,
+  };
+}
+
+function applyAllowanceRateToVariant(
+  variant: CalculationVariant,
+  pct: number
+): CalculationVariant {
+  const rate = Math.max(0, pct) / 100;
+  const clonedProcs: ProcessResult[] = structuredClone(variant.processes);
+  const totalBaseSec = clonedProcs.reduce((a, b) => a + b.baseSec, 0);
+  const totalAllowSec = totalBaseSec * rate;
+
+  const activeItems = clonedProcs.filter((it) => it.baseSec > 0);
+  const sumWeight = activeItems.reduce(
+    (s, it) => s + it.baseSec * (it.weight || PROCESS_DIFF_MAP[it.processName] || 1.0),
+    0
+  );
+
+  for (const it of clonedProcs) {
+    if (it.baseSec <= 0 || rate <= 0) {
+      it.allowByProcessSec = it.baseSec;
+      it.allowByFinalSec = it.baseSec;
+      it.subSteps.forEach((st) => {
+        st.allowByProcessSec = st.baseSec;
+        st.allowByFinalSec = st.baseSec;
+      });
+      continue;
+    }
+
+    const procWeight = it.weight || PROCESS_DIFF_MAP[it.processName] || 1.0;
+    const procAllowByProcess = it.baseSec * rate;
+    const procAllowByFinal =
+      totalAllowSec * ((it.baseSec * procWeight) / (sumWeight || 1));
+
+    it.allowByProcessSec = it.baseSec + procAllowByProcess;
+    it.allowByFinalSec = it.baseSec + procAllowByFinal;
+
+    const subs = it.subSteps;
+    const subWeights = subs.map((st) => {
+      const stageBoost = st.stage && st.stage.toLowerCase().includes('main') ? 1.35 : 1.0;
+      return Math.pow(Math.max(0, st.baseSec), 1.2) * stageBoost;
+    });
+    const sumSubW = subWeights.reduce((a, b) => a + b, 0);
+
+    subs.forEach((st, idx) => {
+      const share = sumSubW > 0 ? subWeights[idx] / sumSubW : 0;
+      st.allowByProcessSec = st.baseSec + procAllowByProcess * share;
+      st.allowByFinalSec = st.baseSec + procAllowByFinal * share;
+    });
+  }
+
+  return {
+    totalBaseSec,
+    totalAllowByProcessSec: clonedProcs.reduce((a, b) => a + b.allowByProcessSec, 0),
+    totalAllowByFinalSec: clonedProcs.reduce((a, b) => a + b.allowByFinalSec, 0),
+    processes: clonedProcs,
+    twistBundlesCount: variant.twistBundlesCount,
+  };
+}
+
+/**
+ * Returns a record adjusted for exporting in a specific AllowanceMode
+ * (and optional override percentage when exporting from a 0% / Tanpa Allowance record).
+ */
+export function buildExportRecordForMode(
+  record: AssyRecord,
+  exportMode: AllowanceMode,
+  overridePct?: number
+): AssyRecord {
+  const effectivePct =
+    exportMode === 'none'
+      ? 0
+      : overridePct !== undefined && Number.isFinite(overridePct)
+      ? Math.max(0, overridePct)
+      : record.params.pfdAllowancePct || 0;
+
+  const needsRecompute =
+    exportMode !== 'none' && Math.abs(effectivePct - (record.params.pfdAllowancePct || 0)) > 1e-6;
+
+  if (!needsRecompute) {
+    return {
+      ...record,
+      params: {
+        ...record.params,
+        allowanceMode: exportMode,
+        pfdAllowancePct: exportMode === 'none' ? 0 : record.params.pfdAllowancePct,
+      },
+    };
+  }
+
+  const regVariant = applyAllowanceRateToVariant(getVariantResult(record, 'reg'), effectivePct);
+  const smvVariant = record.calculation.smv
+    ? applyAllowanceRateToVariant(record.calculation.smv, effectivePct)
+    : undefined;
+
+  return {
+    ...record,
+    params: {
+      ...record.params,
+      allowanceMode: exportMode,
+      pfdAllowancePct: effectivePct,
+    },
+    calculation: {
+      ...record.calculation,
+      totalBaseSec: regVariant.totalBaseSec,
+      totalAllowByProcessSec: regVariant.totalAllowByProcessSec,
+      totalAllowByFinalSec: regVariant.totalAllowByFinalSec,
+      processes: regVariant.processes,
+      smv: smvVariant,
+    },
   };
 }

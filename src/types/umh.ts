@@ -1,6 +1,6 @@
 export type NavTab = 'home' | 'database' | 'std_params' | 'lists' | 'recycle_bin';
 
-export type AllowanceMode = 'by_process' | 'by_final';
+export type AllowanceMode = 'none' | 'by_process' | 'by_final';
 
 export type ProcessId = number;
 
@@ -12,6 +12,7 @@ export interface AssyParams {
   assyNo: string;
   customer: string;
   yearQty?: number;
+  lot?: number;
   masterCct: number;
   pfdAllowancePct: number;
   allowanceMode: AllowanceMode;
@@ -302,3 +303,36 @@ export interface RecycleBinItem {
   deletedAt: string;
   payload: Record<string, unknown>;
 }
+
+export type MasterChangeCategory = 'std_params' | 'std_matrices' | 'auto_cut' | 'feeder';
+
+export type MasterChangeSource = 'manual_edit' | 'excel_upload' | 'reset_default';
+
+export type MasterChangeAction = 'added' | 'modified' | 'removed';
+
+export interface MasterChangeDiffItem {
+  key: string;
+  group: string;
+  label: string;
+  subLabel?: string;
+  action: MasterChangeAction;
+  beforeValue: string;
+  afterValue: string;
+  deltaNumeric?: number | null;
+}
+
+export interface MasterChangeHistoryEntry {
+  id: string;
+  changedAt: string;
+  responsibleName: string;
+  category: MasterChangeCategory;
+  source: MasterChangeSource;
+  sourceFileName?: string;
+  note?: string;
+  totalItemsCount: number;
+  addedCount: number;
+  modifiedCount: number;
+  removedCount: number;
+  changes: MasterChangeDiffItem[];
+}
+
