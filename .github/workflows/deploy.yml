@@ -2,7 +2,7 @@ name: Build and Deploy to GitHub Pages
 
 on:
   push:
-    branches: ["main"] # ganti ke "master" jika branch utamamu bernama master
+    branches: ["main"]
 
 permissions:
   contents: read
@@ -27,7 +27,7 @@ jobs:
 
       - name: Install dependencies and build
         run: |
-          npm ci || npm install
+          npm install --legacy-peer-deps
           npm run build
 
       - name: Upload artifact
