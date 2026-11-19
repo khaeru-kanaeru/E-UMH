@@ -3,14 +3,18 @@ import { User, onAuthStateChanged, signInWithPopup, signOut } from 'firebase/aut
 import {
   Cloud,
   CloudOff,
+  Copy,
   Cpu,
   Database,
+  ExternalLink,
   Home,
   LogIn,
   LogOut,
   Menu,
   Plus,
+  RefreshCw,
   Sliders,
+  Trash2,
   X,
 } from 'lucide-react';
 import { AssyDetailModal } from './components/AssyDetailModal';
@@ -19,10 +23,12 @@ import { DatabaseAssyView } from './components/DatabaseAssyView';
 import { HomeView } from './components/HomeView';
 import { InputWizardModal } from './components/InputWizardModal';
 import { PdfReportModal } from './components/PdfReportModal';
+import { RecycleBinView } from './components/RecycleBinView';
 import { RefreshHistoryModal } from './components/RefreshHistoryModal';
 import { RefreshHistoryPdfModal } from './components/RefreshHistoryPdfModal';
 import { RefreshUmhModal } from './components/RefreshUmhModal';
 import { StdParamsView } from './components/StdParamsView';
+import { DEFAULT_PROCESS_DISCS } from './data/defaultProcessDiscs';
 import {
   DEFAULT_AUTO_CUT_LIST,
   DEFAULT_FEEDER_LIST,
@@ -31,16 +37,31 @@ import {
 import { calculateUmh } from './engine/umhCalculator';
 import { FIRESTORE_DATABASE_ID, auth, googleProvider } from './firebase';
 import {
+  FIRESTORE_RULES_SOURCE,
+  addMasterItemToRecycleBinInCloud,
   batchUpdateAssyRecordsInCloud,
-  clearRefreshHistoryInCloud,
+  buildRecycleBinItemFromAssy,
+  buildRecycleBinItemFromAutoCut,
+  buildRecycleBinItemFromDisc,
+  buildRecycleBinItemFromFeeder,
+  buildRecycleBinItemFromHistory,
   createRefreshHistoryInCloud,
-  deleteAssyRecordFromCloud,
-  deleteRefreshHistoryFromCloud,
+  emptyRecycleBinInCloud,
   initializeCloudWorkspace,
+  isRecycleBinPermissionError,
+  moveAssyRecordToRecycleBinInCloud,
+  moveManyRefreshHistoryToRecycleBinInCloud,
+  moveRefreshHistoryToRecycleBinInCloud,
+  permanentlyDeleteInPlaceAssyInCloud,
+  permanentlyDeleteRecycleBinItemFromCloud,
   replaceAllAssyRecordsInCloud,
+  restoreAssyFromRecycleBinInCloud,
+  restoreHistoryFromRecycleBinInCloud,
+  restoreInPlaceAssyInCloud,
   saveMasterConfigToCloud,
   subscribeAssyRecords,
   subscribeMasterConfig,
+  subscribeRecycleBin,
   subscribeRefreshHistory,
   subscribeUserProfile,
   toScopedDocId,
@@ -54,6 +75,8 @@ import {
   AutoCutItem,
   FeederItem,
   NavTab,
+  ProcessLogicDisc,
+  RecycleBinItem,
   RefreshHistoryEntry,
   StdDatabase,
   UiLang,
@@ -64,6 +87,7 @@ import {
   loadFeederList,
   loadLastPicName,
   loadPendingMasterSync,
+  loadRecycleBin,
   loadRefreshHistory,
   loadStdDatabase,
   resetStdDatabase,
@@ -72,6 +96,7 @@ import {
   saveFeederList,
   saveLastPicName,
   savePendingMasterSync,
+  saveRecycleBin,
   saveRefreshHistory,
   saveStdDatabase,
 } from './utils/storage';
@@ -93,6 +118,7 @@ export default function App() {
   const [refreshHistory, setRefreshHistory] = useState<RefreshHistoryEntry[]>(() =>
     loadRefreshHistory()
   );
+  const [recycleBin, setRecycleBin] = useState<RecycleBinItem[]>(() => loadRecycleBin());
 
   // Firebase Auth & Sync state
   const [authReady, setAuthReady] = useState(false);
@@ -100,6 +126,9 @@ export default function App() {
   const [authBusy, setAuthBusy] = useState(false);
   const [cloudReady, setCloudReady] = useState(false);
   const [cloudNotice, setCloudNotice] = useState<string | null>(null);
+  const [recycleBinNeedsRulesPublish, setRecycleBinNeedsRulesPublish] = useState(false);
+  const [copiedRulesBanner, setCopiedRulesBanner] = useState(false);
+  const [cloudRetryNonce, setCloudRetryNonce] = useState(0);
   const [dismissLoginHint, setDismissLoginHint] = useState(false);
   const [fatalCloudError, setFatalCloudError] = useState<Error | null>(null);
 
@@ -128,6 +157,7 @@ export default function App() {
     feederList,
     records,
     refreshHistory,
+    recycleBin,
     hasPendingMasterChanges,
   });
   localSnapshotRef.current = {
@@ -136,11 +166,25 @@ export default function App() {
     feederList,
     records,
     refreshHistory,
+    recycleBin,
     hasPendingMasterChanges,
+  };
+
+  const handleCopyFirestoreRules = async (): Promise<boolean> => {
+    try {
+      await navigator.clipboard.writeText(FIRESTORE_RULES_SOURCE);
+      return true;
+    } catch {
+      return false;
+    }
   };
 
   const handleCloudMutationError = (err: unknown) => {
     const msg = err instanceof Error ? err.message : String(err);
+    if (isRecycleBinPermissionError(err)) {
+      setRecycleBinNeedsRulesPublish(true);
+      return;
+    }
     if (msg.includes('Quota exceeded')) {
       setCloudNotice(
         'Kuota harian gratis Firestore tercapai (reset besok). Anda tetap dapat bekerja dengan cache lokal.'
@@ -174,17 +218,20 @@ export default function App() {
     const setupCloud = async () => {
       try {
         const snap = localSnapshotRef.current;
-        await initializeCloudWorkspace(authUser, {
+        const { recycleBinCloudAvailable } = await initializeCloudWorkspace(authUser, {
           stdDb: snap.stdDb,
           autoCutList: snap.autoCutList,
           feederList: snap.feederList,
           records: snap.records,
           refreshHistory: snap.refreshHistory,
+          recycleBin: snap.recycleBin,
           lastPicName: loadLastPicName(),
           pendingMasterSync: snap.hasPendingMasterChanges,
         });
 
         if (cancelled) return;
+
+        setRecycleBinNeedsRulesPublish(!recycleBinCloudAvailable);
 
         unsubs.push(
           subscribeUserProfile(
@@ -204,7 +251,10 @@ export default function App() {
         unsubs.push(
           subscribeMasterConfig(
             authUser.uid,
-            DEFAULT_STD_DATABASE,
+            {
+              ...DEFAULT_STD_DATABASE,
+              processDiscs: structuredClone(DEFAULT_PROCESS_DISCS),
+            },
             (cfg) => {
               if (!cfg) return;
               localSnapshotRef.current.stdDb = cfg.stdDb;
@@ -244,8 +294,34 @@ export default function App() {
                     }
                   : rec;
               });
-              setRecords(normalized);
-              saveAssyPayloads(normalized);
+
+              const activeOnly = normalized.filter((rec) => !rec.params?._recycleBinMeta);
+              const trashedAssys = normalized.filter((rec) => Boolean(rec.params?._recycleBinMeta));
+
+              setRecords(activeOnly);
+              saveAssyPayloads(activeOnly);
+
+              const inPlaceBinItems: RecycleBinItem[] = trashedAssys.map((rec) => {
+                const meta = rec.params._recycleBinMeta!;
+                const { _recycleBinMeta: _omit, ...cleanParams } = rec.params;
+                const cleanRec: AssyRecord = { ...rec, params: cleanParams };
+                const baseBin = buildRecycleBinItemFromAssy(cleanRec);
+                return {
+                  ...baseBin,
+                  id: meta.binId || `inplace_${rec.id}`,
+                  originalId: rec.id,
+                  deletedAt: meta.deletedAt || rec.updatedAt,
+                };
+              });
+
+              setRecycleBin((prev) => {
+                const withoutOldInPlace = prev.filter((b) => !b.id.startsWith('inplace_'));
+                const merged = [...inPlaceBinItems, ...withoutOldInPlace].sort((a, b) =>
+                  b.deletedAt.localeCompare(a.deletedAt)
+                );
+                saveRecycleBin(merged);
+                return merged;
+              });
             },
             handleCloudMutationError
           )
@@ -262,6 +338,25 @@ export default function App() {
           )
         );
 
+        if (recycleBinCloudAvailable) {
+          unsubs.push(
+            subscribeRecycleBin(
+              authUser.uid,
+              (cloudBinItems) => {
+                setRecycleBin((prev) => {
+                  const inPlaceOnly = prev.filter((b) => b.id.startsWith('inplace_'));
+                  const merged = [...cloudBinItems, ...inPlaceOnly].sort((a, b) =>
+                    b.deletedAt.localeCompare(a.deletedAt)
+                  );
+                  saveRecycleBin(merged);
+                  return merged;
+                });
+              },
+              handleCloudMutationError
+            )
+          );
+        }
+
         setCloudReady(true);
         setCloudNotice(null);
       } catch (err) {
@@ -277,7 +372,7 @@ export default function App() {
       cancelled = true;
       unsubs.forEach((fn) => fn());
     };
-  }, [authReady, authUser]);
+  }, [authReady, authUser, cloudRetryNonce]);
 
   const handleGoogleSignIn = async () => {
     setAuthBusy(true);
@@ -456,23 +551,141 @@ export default function App() {
     );
   };
 
+  const useDedicatedCloudBin = isCloudActive && Boolean(authUser) && !recycleBinNeedsRulesPublish;
+
+  const handleDeleteAutoCutItem = (item: AutoCutItem) => {
+    const nextList = autoCutList.filter((a) => a.id !== item.id);
+    const binItem = buildRecycleBinItemFromAutoCut(item);
+    const scopedBinItem: RecycleBinItem = {
+      ...binItem,
+      id: isCloudActive && authUser ? toScopedDocId(authUser.uid, binItem.id) : binItem.id,
+    };
+
+    localSnapshotRef.current.autoCutList = nextList;
+    setAutoCutList(nextList);
+    saveAutoCutList(nextList);
+    setRecycleBin((prev) => {
+      const next = [scopedBinItem, ...prev];
+      saveRecycleBin(next);
+      return next;
+    });
+    markMasterChanged();
+    syncMasterToCloud(true);
+
+    if (useDedicatedCloudBin && authUser) {
+      void addMasterItemToRecycleBinInCloud(authUser.uid, scopedBinItem).catch(
+        handleCloudMutationError
+      );
+    }
+  };
+
+  const handleDeleteFeederItem = (item: FeederItem) => {
+    const nextList = feederList.filter((f) => f.id !== item.id);
+    const binItem = buildRecycleBinItemFromFeeder(item);
+    const scopedBinItem: RecycleBinItem = {
+      ...binItem,
+      id: isCloudActive && authUser ? toScopedDocId(authUser.uid, binItem.id) : binItem.id,
+    };
+
+    localSnapshotRef.current.feederList = nextList;
+    setFeederList(nextList);
+    saveFeederList(nextList);
+    setRecycleBin((prev) => {
+      const next = [scopedBinItem, ...prev];
+      saveRecycleBin(next);
+      return next;
+    });
+    markMasterChanged();
+    syncMasterToCloud(true);
+
+    if (useDedicatedCloudBin && authUser) {
+      void addMasterItemToRecycleBinInCloud(authUser.uid, scopedBinItem).catch(
+        handleCloudMutationError
+      );
+    }
+  };
+
+  const handleDeleteCustomDisc = (disc: ProcessLogicDisc, nextDb: StdDatabase) => {
+    const binItem = buildRecycleBinItemFromDisc(disc);
+    const scopedBinItem: RecycleBinItem = {
+      ...binItem,
+      id: isCloudActive && authUser ? toScopedDocId(authUser.uid, binItem.id) : binItem.id,
+    };
+
+    localSnapshotRef.current.stdDb = nextDb;
+    setStdDb(nextDb);
+    saveStdDatabase(nextDb);
+    setRecycleBin((prev) => {
+      const next = [scopedBinItem, ...prev];
+      saveRecycleBin(next);
+      return next;
+    });
+    markMasterChanged();
+    syncMasterToCloud(true);
+
+    if (useDedicatedCloudBin && authUser) {
+      void addMasterItemToRecycleBinInCloud(authUser.uid, scopedBinItem).catch(
+        handleCloudMutationError
+      );
+    }
+  };
+
   const handleDeleteHistoryEntry = (id: string) => {
+    const target = refreshHistory.find((e) => e.id === id);
+    if (!target) return;
+
+    const binItem = buildRecycleBinItemFromHistory(target);
+    const scopedBinItem: RecycleBinItem = {
+      ...binItem,
+      id: isCloudActive && authUser ? toScopedDocId(authUser.uid, binItem.id) : binItem.id,
+    };
+
     setRefreshHistory((prev) => {
       const next = prev.filter((e) => e.id !== id);
       saveRefreshHistory(next);
       return next;
     });
+    setRecycleBin((prev) => {
+      const next = [scopedBinItem, ...prev];
+      saveRecycleBin(next);
+      return next;
+    });
+
     if (isCloudActive && authUser) {
-      void deleteRefreshHistoryFromCloud(authUser.uid, id).catch(handleCloudMutationError);
+      void moveRefreshHistoryToRecycleBinInCloud(
+        authUser.uid,
+        target,
+        scopedBinItem,
+        useDedicatedCloudBin
+      ).catch(handleCloudMutationError);
     }
   };
 
   const handleClearHistory = () => {
-    const ids = refreshHistory.map((e) => e.id);
+    if (refreshHistory.length === 0) return;
+    const pairs = refreshHistory.map((entry) => {
+      const binItem = buildRecycleBinItemFromHistory(entry);
+      const scopedBinItem: RecycleBinItem = {
+        ...binItem,
+        id: isCloudActive && authUser ? toScopedDocId(authUser.uid, binItem.id) : binItem.id,
+      };
+      return { entry, binItem: scopedBinItem };
+    });
+
     setRefreshHistory([]);
     saveRefreshHistory([]);
-    if (isCloudActive && authUser && ids.length > 0) {
-      void clearRefreshHistoryInCloud(authUser.uid, ids).catch(handleCloudMutationError);
+    setRecycleBin((prev) => {
+      const next = [...pairs.map((p) => p.binItem), ...prev];
+      saveRecycleBin(next);
+      return next;
+    });
+
+    if (isCloudActive && authUser) {
+      void moveManyRefreshHistoryToRecycleBinInCloud(
+        authUser.uid,
+        pairs,
+        useDedicatedCloudBin
+      ).catch(handleCloudMutationError);
     }
   };
 
@@ -495,7 +708,7 @@ export default function App() {
       void upsertAssyRecordInCloud(authUser.uid, fullRecord).catch(handleCloudMutationError);
     } else if (authReady && !authUser) {
       setCloudNotice(
-        `Assy "${fullRecord.params.assyNo}" tersimpan di lokal browser. Klik "Masuk Google" untuk menyimpannya ke Firebase estdumh (${FIRESTORE_DATABASE_ID}).`
+        `Assy "${fullRecord.params.assyNo}" tersimpan di lokal browser. Klik "Masuk Google" untuk menyimpannya langsung ke server Firebase.`
       );
     }
 
@@ -505,32 +718,304 @@ export default function App() {
   };
 
   const handleDeleteRecord = (id: string) => {
+    const target = records.find((r) => r.id === id);
+    if (!target) return;
+
+    const binItem = buildRecycleBinItemFromAssy(target);
+    const scopedId = isCloudActive && authUser ? toScopedDocId(authUser.uid, target.id) : target.id;
+    const scopedBinItem: RecycleBinItem = {
+      ...binItem,
+      id: useDedicatedCloudBin && authUser
+        ? toScopedDocId(authUser.uid, binItem.id)
+        : isCloudActive && authUser
+        ? `inplace_${scopedId}`
+        : binItem.id,
+      originalId: scopedId,
+    };
+
     setRecords((prev) => {
       const next = prev.filter((r) => r.id !== id);
       saveAssyPayloads(next);
       return next;
     });
+    setRecycleBin((prev) => {
+      const next = [scopedBinItem, ...prev.filter((b) => b.id !== scopedBinItem.id)];
+      saveRecycleBin(next);
+      return next;
+    });
     if (detailRecord?.id === id) {
       setDetailRecord(null);
     }
+
     if (isCloudActive && authUser) {
-      void deleteAssyRecordFromCloud(authUser.uid, id).catch(handleCloudMutationError);
+      void moveAssyRecordToRecycleBinInCloud(
+        authUser.uid,
+        target,
+        scopedBinItem,
+        useDedicatedCloudBin
+      ).catch(handleCloudMutationError);
+    }
+
+    setRefreshNotice(
+      `Assy "${target.params.assyNo}" dipindahkan ke Recycle Bin${
+        isCloudActive ? ' Firebase' : ''
+      } dan dapat dipulihkan kapan saja.`
+    );
+  };
+
+  const handleRestoreRecycleItem = (item: RecycleBinItem) => {
+    const removeLocalBin = () => {
+      setRecycleBin((prev) => {
+        const next = prev.filter((b) => b.id !== item.id);
+        saveRecycleBin(next);
+        return next;
+      });
+    };
+
+    if (item.itemType === 'assy_record') {
+      const raw = item.payload as Partial<AssyRecord>;
+      const basePayload: AssyInputPayload = {
+        id: item.originalId || String(raw.id || `assy_${Date.now()}`),
+        createdAt: String(raw.createdAt || new Date().toISOString()),
+        updatedAt: new Date().toISOString(),
+        params: raw.params!,
+        assemblyComponents: raw.assemblyComponents!,
+        partList: Array.isArray(raw.partList) ? raw.partList : [],
+        ppcsList: Array.isArray(raw.ppcsList) ? raw.ppcsList : [],
+        assemblyCotList: Array.isArray(raw.assemblyCotList) ? raw.assemblyCotList : [],
+        terminalRatios: raw.terminalRatios || {},
+      };
+      const needsRecompute =
+        !raw.calculation ||
+        !raw.calculation.smv ||
+        !Array.isArray(raw.calculation.processes) ||
+        raw.calculation.processes.length === 0;
+      const restoredRecord: AssyRecord = {
+        ...basePayload,
+        calculation: needsRecompute
+          ? calculateUmh(basePayload, stdDb, autoCutList, feederList)
+          : raw.calculation!,
+      };
+
+      removeLocalBin();
+      setRecords((prev) => {
+        const collision = prev.some((r) => r.id === restoredRecord.id);
+        const finalLocalRecord = collision
+          ? { ...restoredRecord, id: `restored_${Date.now()}` }
+          : restoredRecord;
+        const next = [finalLocalRecord, ...prev];
+        saveAssyPayloads(next);
+        return next;
+      });
+
+      if (isCloudActive && authUser) {
+        if (item.id.startsWith('inplace_')) {
+          void restoreInPlaceAssyInCloud(authUser.uid, restoredRecord).catch(
+            handleCloudMutationError
+          );
+        } else if (useDedicatedCloudBin) {
+          void restoreAssyFromRecycleBinInCloud(authUser.uid, item, restoredRecord).catch(
+            handleCloudMutationError
+          );
+        } else {
+          void upsertAssyRecordInCloud(authUser.uid, restoredRecord).catch(
+            handleCloudMutationError
+          );
+        }
+      }
+      return;
+    }
+
+    if (item.itemType === 'refresh_history') {
+      const raw = item.payload as Partial<RefreshHistoryEntry>;
+      const restoredEntry: RefreshHistoryEntry = {
+        id: item.originalId || String(raw.id || `hist_${Date.now()}`),
+        refreshedAt: String(raw.refreshedAt || new Date().toISOString()),
+        responsibleName: String(raw.responsibleName || 'PIC'),
+        totalSelectedCount: Number(raw.totalSelectedCount) || 0,
+        affectedAssyCount: Number(raw.affectedAssyCount) || 0,
+        unaffectedAssyCount: Number(raw.unaffectedAssyCount) || 0,
+        affectedDiffs: Array.isArray(raw.affectedDiffs) ? raw.affectedDiffs : [],
+      };
+
+      removeLocalBin();
+      setRefreshHistory((prev) => {
+        const collision = prev.some((h) => h.id === restoredEntry.id);
+        const finalEntry = collision
+          ? { ...restoredEntry, id: `restored_hist_${Date.now()}` }
+          : restoredEntry;
+        const next = [finalEntry, ...prev];
+        saveRefreshHistory(next);
+        return next;
+      });
+
+      if (isCloudActive && authUser) {
+        if (useDedicatedCloudBin) {
+          void restoreHistoryFromRecycleBinInCloud(authUser.uid, item, restoredEntry).catch(
+            handleCloudMutationError
+          );
+        } else {
+          void createRefreshHistoryInCloud(authUser.uid, restoredEntry).catch(
+            handleCloudMutationError
+          );
+        }
+      }
+      return;
+    }
+
+    if (item.itemType === 'auto_cut_item') {
+      const raw = item.payload as Partial<AutoCutItem>;
+      const restored: AutoCutItem = {
+        id: String(raw.id || `acl_${Date.now()}`),
+        customer: String(raw.customer || 'All'),
+        terminal: String(raw.terminal || item.title),
+        process: String(raw.process || 'auto cut'),
+      };
+      const nextList = [
+        restored,
+        ...autoCutList.filter((a) => a.id !== restored.id),
+      ];
+      removeLocalBin();
+      localSnapshotRef.current.autoCutList = nextList;
+      setAutoCutList(nextList);
+      saveAutoCutList(nextList);
+      markMasterChanged();
+      if (isCloudActive && authUser) {
+        const uid = authUser.uid;
+        const snap = localSnapshotRef.current;
+        void saveMasterConfigToCloud(uid, snap.stdDb, snap.autoCutList, snap.feederList)
+          .then(() =>
+            useDedicatedCloudBin
+              ? permanentlyDeleteRecycleBinItemFromCloud(uid, item.id)
+              : undefined
+          )
+          .catch(handleCloudMutationError);
+      }
+      return;
+    }
+
+    if (item.itemType === 'feeder_item') {
+      const raw = item.payload as Partial<FeederItem>;
+      const restored: FeederItem = {
+        id: String(raw.id || `fl_${Date.now()}`),
+        seal: String(raw.seal || item.title),
+        process: String(raw.process || 'auto feeder'),
+      };
+      const nextList = [
+        restored,
+        ...feederList.filter((f) => f.id !== restored.id),
+      ];
+      removeLocalBin();
+      localSnapshotRef.current.feederList = nextList;
+      setFeederList(nextList);
+      saveFeederList(nextList);
+      markMasterChanged();
+      if (isCloudActive && authUser) {
+        const uid = authUser.uid;
+        const snap = localSnapshotRef.current;
+        void saveMasterConfigToCloud(uid, snap.stdDb, snap.autoCutList, snap.feederList)
+          .then(() =>
+            useDedicatedCloudBin
+              ? permanentlyDeleteRecycleBinItemFromCloud(uid, item.id)
+              : undefined
+          )
+          .catch(handleCloudMutationError);
+      }
+      return;
+    }
+
+    if (item.itemType === 'process_disc') {
+      const restoredDisc = item.payload as unknown as ProcessLogicDisc;
+      const currentDiscs = stdDb.processDiscs ?? DEFAULT_PROCESS_DISCS;
+      const nextDiscs = [
+        ...currentDiscs.filter((d) => d.processId !== restoredDisc.processId),
+        restoredDisc,
+      ].sort((a, b) => a.processId - b.processId);
+      const nextDb: StdDatabase = { ...stdDb, processDiscs: nextDiscs };
+      removeLocalBin();
+      localSnapshotRef.current.stdDb = nextDb;
+      setStdDb(nextDb);
+      saveStdDatabase(nextDb);
+      markMasterChanged();
+      if (isCloudActive && authUser) {
+        const uid = authUser.uid;
+        const snap = localSnapshotRef.current;
+        void saveMasterConfigToCloud(uid, snap.stdDb, snap.autoCutList, snap.feederList)
+          .then(() =>
+            useDedicatedCloudBin
+              ? permanentlyDeleteRecycleBinItemFromCloud(uid, item.id)
+              : undefined
+          )
+          .catch(handleCloudMutationError);
+      }
+    }
+  };
+
+  const handlePermanentDeleteRecycleItem = (binId: string) => {
+    const target = recycleBin.find((b) => b.id === binId);
+    setRecycleBin((prev) => {
+      const next = prev.filter((b) => b.id !== binId);
+      saveRecycleBin(next);
+      return next;
+    });
+    if (isCloudActive && authUser) {
+      if (binId.startsWith('inplace_') && target) {
+        void permanentlyDeleteInPlaceAssyInCloud(authUser.uid, target.originalId).catch(
+          handleCloudMutationError
+        );
+      } else if (useDedicatedCloudBin) {
+        void permanentlyDeleteRecycleBinItemFromCloud(authUser.uid, binId).catch(
+          handleCloudMutationError
+        );
+      }
+    }
+  };
+
+  const handleEmptyRecycleBin = () => {
+    const inPlaceTargets = recycleBin.filter((b) => b.id.startsWith('inplace_'));
+    const dedicatedIds = recycleBin
+      .filter((b) => !b.id.startsWith('inplace_'))
+      .map((b) => b.id);
+    setRecycleBin([]);
+    saveRecycleBin([]);
+    if (isCloudActive && authUser) {
+      inPlaceTargets.forEach((t) => {
+        void permanentlyDeleteInPlaceAssyInCloud(authUser.uid, t.originalId).catch(
+          handleCloudMutationError
+        );
+      });
+      if (useDedicatedCloudBin && dedicatedIds.length > 0) {
+        void emptyRecycleBinInCloud(authUser.uid, dedicatedIds).catch(handleCloudMutationError);
+      }
     }
   };
 
   const handleImportJson = (payloads: AssyInputPayload[]) => {
-    const prevIds = records.map((r) => r.id);
+    const prevRecords = records;
     const recalculated: AssyRecord[] = payloads.map((p) => ({
       ...p,
       id: isCloudActive && authUser ? toScopedDocId(authUser.uid, p.id) : p.id,
       calculation: calculateUmh(p, stdDb, autoCutList, feederList),
     }));
+    const newIdSet = new Set(recalculated.map((r) => r.id));
+    const removedLocally = prevRecords.filter((r) => !newIdSet.has(r.id));
+    if (!isCloudActive && removedLocally.length > 0) {
+      const archived = removedLocally.map((r) => buildRecycleBinItemFromAssy(r));
+      setRecycleBin((prev) => {
+        const next = [...archived, ...prev];
+        saveRecycleBin(next);
+        return next;
+      });
+    }
     setRecords(recalculated);
     saveAssyPayloads(recalculated);
     if (isCloudActive && authUser) {
-      void replaceAllAssyRecordsInCloud(authUser.uid, prevIds, recalculated).catch(
-        handleCloudMutationError
-      );
+      void replaceAllAssyRecordsInCloud(
+        authUser.uid,
+        prevRecords,
+        recalculated,
+        useDedicatedCloudBin
+      ).catch(handleCloudMutationError);
     }
   };
 
@@ -539,6 +1024,7 @@ export default function App() {
     { id: 'database', num: '02', label: 'Database Assy', jp: '品番一覧', icon: Database },
     { id: 'std_params', num: '03', label: 'Parameter STD (Sec)', jp: '標準時間', icon: Sliders },
     { id: 'lists', num: '04', label: 'Auto-Cut & Feeder List', jp: '設備マスタ', icon: Cpu },
+    { id: 'recycle_bin', num: '05', label: 'Recycle Bin', jp: 'ゴミ箱', icon: Trash2 },
   ];
 
   return (
@@ -621,12 +1107,12 @@ export default function App() {
         <div className="max-w-[1600px] w-full mx-auto px-4 sm:px-6 pt-3 print:hidden">
           <div className="px-4 py-2.5 rounded-xl bg-blue-50 border border-blue-200 text-xs text-[#1E3A8A] flex flex-wrap items-center justify-between gap-3">
             <span>
-              <strong>Mode Lokal Browser:</strong> Masuk dengan akun Google agar data (
-              <span className="font-mono-num">users</span>,{' '}
-              <span className="font-mono-num">masterConfigs</span>,{' '}
+              <strong>Mode Lokal Browser:</strong> Masuk dengan akun Google agar semua CRUD (
               <span className="font-mono-num">assyRecords</span>,{' '}
-              <span className="font-mono-num">refreshHistory</span>) tersimpan ke Firebase{' '}
-              <strong>estdumh ({FIRESTORE_DATABASE_ID})</strong>.
+              <span className="font-mono-num">masterConfigs</span>,{' '}
+              <span className="font-mono-num">refreshHistory</span>,{' '}
+              <span className="font-mono-num">recycleBin</span>) langsung tersimpan ke server
+              Firebase <strong>estdumh ({FIRESTORE_DATABASE_ID})</strong>.
             </span>
             <div className="flex items-center gap-2 shrink-0">
               <button
@@ -645,6 +1131,52 @@ export default function App() {
                 aria-label="Tutup pemberitahuan"
               >
                 <X className="w-3.5 h-3.5" />
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {isCloudActive && recycleBinNeedsRulesPublish && (
+        <div className="max-w-[1600px] w-full mx-auto px-4 sm:px-6 pt-3 print:hidden">
+          <div className="px-4 py-2.5 rounded-xl bg-amber-50 border border-amber-200 text-xs text-amber-950 flex flex-wrap items-center justify-between gap-3">
+            <span>
+              <strong>Perlu Publish Rules di Database (default):</strong> Data Assy &amp; Master
+              sudah tersinkron ke <span className="font-mono-num">estdumh ({FIRESTORE_DATABASE_ID})</span>,
+              namun koleksi <span className="font-mono-num">/recycleBin</span> butuh aturan terbaru
+              di Firebase Console.
+            </span>
+            <div className="flex flex-wrap items-center gap-2 shrink-0">
+              <button
+                type="button"
+                onClick={async () => {
+                  const ok = await handleCopyFirestoreRules();
+                  if (ok) {
+                    setCopiedRulesBanner(true);
+                    setTimeout(() => setCopiedRulesBanner(false), 3000);
+                  }
+                }}
+                className="inline-flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg bg-amber-900 text-white text-xs font-semibold hover:bg-amber-950 cursor-pointer"
+              >
+                <Copy className="w-3.5 h-3.5" />
+                <span>{copiedRulesBanner ? 'Rules Tersalin!' : 'Salin Firestore Rules'}</span>
+              </button>
+              <a
+                href="https://console.firebase.google.com/project/estdumh/firestore/databases/-default-/rules"
+                target="_blank"
+                rel="noopener noreferrer"
+                className="inline-flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg bg-white border border-amber-300 text-amber-950 text-xs font-semibold hover:bg-amber-100"
+              >
+                <ExternalLink className="w-3.5 h-3.5" />
+                <span>Buka Rules (default)</span>
+              </a>
+              <button
+                type="button"
+                onClick={() => setCloudRetryNonce((n) => n + 1)}
+                className="inline-flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg bg-[#1E3A8A] text-white text-xs font-semibold hover:bg-[#172E6E] cursor-pointer"
+              >
+                <RefreshCw className="w-3.5 h-3.5" />
+                <span>Sinkronkan Ulang</span>
               </button>
             </div>
           </div>
@@ -694,7 +1226,12 @@ export default function App() {
                   >
                     <span className="flex items-center gap-2.5 min-w-0">
                       <Icon className={`w-4 h-4 shrink-0 ${isActive ? 'text-blue-300' : 'text-slate-400'}`} />
-                      <span className="truncate">{item.label}</span>
+                      <span className="truncate">
+                        {item.label}
+                        {item.id === 'recycle_bin' && recycleBin.length > 0
+                          ? ` (${recycleBin.length})`
+                          : ''}
+                      </span>
                     </span>
                     <span
                       className={`text-[10px] font-normal shrink-0 ${
@@ -727,6 +1264,10 @@ export default function App() {
                 <div className="flex items-center justify-between text-slate-600">
                   <span>Feeder Seal</span>
                   <span className="font-mono-num font-semibold text-slate-900">{feederList.length}</span>
+                </div>
+                <div className="flex items-center justify-between text-slate-600">
+                  <span>Recycle Bin</span>
+                  <span className="font-mono-num font-semibold text-slate-900">{recycleBin.length}</span>
                 </div>
                 <div className="pt-2 mt-2 border-t border-slate-100 flex items-center justify-between text-[11px]">
                   <span className="text-slate-500">Sinkronisasi</span>
@@ -820,6 +1361,8 @@ export default function App() {
               records={records}
               hasPendingMasterChanges={hasPendingMasterChanges}
               refreshHistoryCount={refreshHistory.length}
+              recycleBinCount={recycleBin.length}
+              isCloudActive={isCloudActive}
               externalNotice={refreshNotice}
               onDismissExternalNotice={() => setRefreshNotice(null)}
               onOpenRefreshModal={() => {
@@ -827,6 +1370,7 @@ export default function App() {
                 setRefreshModalOpen(true);
               }}
               onOpenHistoryModal={() => setHistoryModalOpen(true)}
+              onOpenRecycleBin={() => setActiveTab('recycle_bin')}
               onOpenDetail={(rec) => setDetailRecord(rec)}
               onDeleteRecord={handleDeleteRecord}
               onImportJson={handleImportJson}
@@ -843,6 +1387,7 @@ export default function App() {
               autoCutList={autoCutList}
               feederList={feederList}
               onSaveStdDb={handleSaveStdDb}
+              onDeleteCustomDisc={handleDeleteCustomDisc}
               onResetDefault={handleResetStdDb}
             />
           )}
@@ -853,8 +1398,23 @@ export default function App() {
               feederList={feederList}
               onUpdateAutoCut={handleUpdateAutoCut}
               onUpdateFeeder={handleUpdateFeeder}
+              onDeleteAutoCutItem={handleDeleteAutoCutItem}
+              onDeleteFeederItem={handleDeleteFeederItem}
               onResetAutoCut={handleResetAutoCut}
               onResetFeeder={handleResetFeeder}
+            />
+          )}
+
+          {activeTab === 'recycle_bin' && (
+            <RecycleBinView
+              items={recycleBin}
+              isCloudActive={isCloudActive}
+              recycleBinNeedsRulesPublish={recycleBinNeedsRulesPublish}
+              onCopyRules={handleCopyFirestoreRules}
+              onRetryCloudSync={() => setCloudRetryNonce((n) => n + 1)}
+              onRestoreItem={handleRestoreRecycleItem}
+              onPermanentDeleteItem={handlePermanentDeleteRecycleItem}
+              onEmptyRecycleBin={handleEmptyRecycleBin}
             />
           )}
         </main>

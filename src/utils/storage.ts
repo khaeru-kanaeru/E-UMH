@@ -11,6 +11,7 @@ import {
   AssyRecord,
   AutoCutItem,
   FeederItem,
+  RecycleBinItem,
   RefreshHistoryEntry,
   StdDatabase,
 } from '../types/umh';
@@ -22,6 +23,7 @@ const KEY_FEEDER = 'wh_fl_list_v2';
 const KEY_PENDING_SYNC = 'wh_pending_master_sync_v2';
 const KEY_REFRESH_HISTORY = 'wh_umh_refresh_history_v2';
 const KEY_LAST_PIC = 'wh_umh_last_pic_v2';
+const KEY_RECYCLE_BIN = 'wh_recycle_bin_v2';
 
 export function loadPendingMasterSync(): boolean {
   try {
@@ -214,4 +216,24 @@ export function saveAssyPayloads(
     ...('calculation' in p && p.calculation ? { calculation: p.calculation } : {}),
   }));
   localStorage.setItem(KEY_RECORDS, JSON.stringify(clean));
+}
+
+export function loadRecycleBin(): RecycleBinItem[] {
+  try {
+    const raw = localStorage.getItem(KEY_RECYCLE_BIN);
+    if (!raw) return [];
+    const parsed = JSON.parse(raw) as RecycleBinItem[];
+    if (Array.isArray(parsed)) return parsed;
+  } catch {
+    // ignore parse failure
+  }
+  return [];
+}
+
+export function saveRecycleBin(items: RecycleBinItem[]): void {
+  try {
+    localStorage.setItem(KEY_RECYCLE_BIN, JSON.stringify(items));
+  } catch {
+    // ignore storage errors
+  }
 }

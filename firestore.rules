@@ -65,6 +65,7 @@ service cloud.firestore {
           'acMatrixMap',
           'saMatrixMap',
           'mcMatrixMap',
+          'processDiscs',
           'autoCutList',
           'feederList',
           'createdAt',
@@ -77,6 +78,7 @@ service cloud.firestore {
         && data.acMatrixMap is map
         && data.saMatrixMap is map
         && data.mcMatrixMap is map
+        && (!('processDiscs' in data) || (data.processDiscs is list && data.processDiscs.size() <= 100 && (data.processDiscs.size() == 0 || data.processDiscs[0] is map)))
         && data.autoCutList is list && data.autoCutList.size() <= 2000
         && (data.autoCutList.size() == 0 || data.autoCutList[0] is map)
         && data.feederList is list && data.feederList.size() <= 2000
@@ -171,6 +173,44 @@ service cloud.firestore {
         && data.createdAt is timestamp;
     }
 
+    function isValidRecycleBinItem(data) {
+      return data.keys().hasAll([
+          'id',
+          'ownerId',
+          'itemType',
+          'originalCollection',
+          'originalId',
+          'title',
+          'subtitle',
+          'payload',
+          'deletedAt',
+          'createdAt'
+        ])
+        && data.keys().hasOnly([
+          'id',
+          'ownerId',
+          'itemType',
+          'originalCollection',
+          'originalId',
+          'title',
+          'subtitle',
+          'payload',
+          'deletedAt',
+          'createdAt'
+        ])
+        && isValidId(data.id)
+        && isValidId(data.ownerId)
+        && data.ownerId == request.auth.uid
+        && data.itemType in ['assy_record', 'refresh_history', 'auto_cut_item', 'feeder_item', 'process_disc']
+        && data.originalCollection in ['assyRecords', 'refreshHistory', 'masterConfigs']
+        && isValidId(data.originalId)
+        && data.title is string && data.title.size() >= 1 && data.title.size() <= 160
+        && data.subtitle is string && data.subtitle.size() <= 240
+        && data.payload is map
+        && data.deletedAt is timestamp
+        && data.createdAt is timestamp;
+    }
+
     // Collection 1: users/{userId}
     match /users/{userId} {
       allow get: if isSignedIn() && isValidId(userId) && request.auth.uid == userId;
@@ -223,6 +263,7 @@ service cloud.firestore {
           'acMatrixMap',
           'saMatrixMap',
           'mcMatrixMap',
+          'processDiscs',
           'autoCutList',
           'feederList',
           'updatedAt'
@@ -275,6 +316,20 @@ service cloud.firestore {
         && incoming().createdAt == request.time;
       allow update: if false;
       allow delete: if isSignedIn() && isValidId(historyId) && existing().ownerId == request.auth.uid;
+    }
+
+    // Collection 5: recycleBin/{itemId}
+    match /recycleBin/{itemId} {
+      allow get: if isSignedIn() && isValidId(itemId) && existing().ownerId == request.auth.uid;
+      allow list: if isSignedIn() && resource.data.ownerId == request.auth.uid;
+      allow create: if isSignedIn()
+        && isValidId(itemId)
+        && isValidRecycleBinItem(incoming())
+        && incoming().id == itemId
+        && incoming().deletedAt == request.time
+        && incoming().createdAt == request.time;
+      allow update: if false;
+      allow delete: if isSignedIn() && isValidId(itemId) && existing().ownerId == request.auth.uid;
     }
   }
 }

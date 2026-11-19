@@ -42,6 +42,7 @@ interface StdParamsViewProps {
   autoCutList: AutoCutItem[];
   feederList: FeederItem[];
   onSaveStdDb: (db: StdDatabase) => void;
+  onDeleteCustomDisc?: (disc: ProcessLogicDisc, nextDb: StdDatabase) => void;
   onResetDefault: () => StdDatabase;
 }
 
@@ -57,6 +58,7 @@ export function StdParamsView({
   autoCutList,
   feederList,
   onSaveStdDb,
+  onDeleteCustomDisc,
   onResetDefault,
 }: StdParamsViewProps) {
   const [draft, setDraft] = useState<StdDatabase>(() => ({
@@ -206,13 +208,20 @@ export function StdParamsView({
   };
 
   const handleDeleteCustomDisc = (pid: number) => {
-    const nextDiscs = (draft.processDiscs ?? DEFAULT_PROCESS_DISCS).filter(
-      (d) => d.processId !== pid
-    );
+    const currentDiscs = draft.processDiscs ?? DEFAULT_PROCESS_DISCS;
+    const removedDisc = currentDiscs.find((d) => d.processId === pid);
+    const nextDiscs = currentDiscs.filter((d) => d.processId !== pid);
     const nextDb: StdDatabase = { ...draft, processDiscs: nextDiscs };
     setDraft(nextDb);
-    onSaveStdDb(nextDb);
-    showToast(`Sub-Proses kustom #${pid} dihapus.`);
+    if (removedDisc && onDeleteCustomDisc) {
+      onDeleteCustomDisc(removedDisc, nextDb);
+      showToast(
+        `Sub-Proses kustom #${pid} (${removedDisc.processName}) dipindahkan ke Recycle Bin (dapat di-restore).`
+      );
+    } else {
+      onSaveStdDb(nextDb);
+      showToast(`Sub-Proses kustom #${pid} dihapus.`);
+    }
   };
 
   const handleResetAllDiscs = () => {

@@ -1,4 +1,4 @@
-export type NavTab = 'home' | 'database' | 'std_params' | 'lists';
+export type NavTab = 'home' | 'database' | 'std_params' | 'lists' | 'recycle_bin';
 
 export type AllowanceMode = 'by_process' | 'by_final';
 
@@ -15,6 +15,10 @@ export interface AssyParams {
   masterCct: number;
   pfdAllowancePct: number;
   allowanceMode: AllowanceMode;
+  _recycleBinMeta?: {
+    binId: string;
+    deletedAt: string;
+  };
 }
 
 export interface AssemblyComponents {
@@ -274,4 +278,27 @@ export interface RefreshHistoryEntry {
   affectedAssyCount: number;
   unaffectedAssyCount: number;
   affectedDiffs: AssyRefreshDiff[];
+}
+
+export type RecycleBinItemType =
+  | 'assy_record'
+  | 'refresh_history'
+  | 'auto_cut_item'
+  | 'feeder_item'
+  | 'process_disc';
+
+export type RecycleBinOriginalCollection =
+  | 'assyRecords'
+  | 'refreshHistory'
+  | 'masterConfigs';
+
+export interface RecycleBinItem {
+  id: string;
+  itemType: RecycleBinItemType;
+  originalCollection: RecycleBinOriginalCollection;
+  originalId: string;
+  title: string;
+  subtitle: string;
+  deletedAt: string;
+  payload: Record<string, unknown>;
 }

@@ -19,10 +19,13 @@ interface DatabaseAssyViewProps {
   records: AssyRecord[];
   hasPendingMasterChanges: boolean;
   refreshHistoryCount: number;
+  recycleBinCount: number;
+  isCloudActive: boolean;
   externalNotice?: string | null;
   onDismissExternalNotice?: () => void;
   onOpenRefreshModal: () => void;
   onOpenHistoryModal: () => void;
+  onOpenRecycleBin: () => void;
   onOpenDetail: (record: AssyRecord) => void;
   onDeleteRecord: (id: string) => void;
   onImportJson: (payloads: AssyInputPayload[]) => void;
@@ -33,10 +36,13 @@ export function DatabaseAssyView({
   records,
   hasPendingMasterChanges,
   refreshHistoryCount,
+  recycleBinCount,
+  isCloudActive,
   externalNotice,
   onDismissExternalNotice,
   onOpenRefreshModal,
   onOpenHistoryModal,
+  onOpenRecycleBin,
   onOpenDetail,
   onDeleteRecord,
   onImportJson,
@@ -121,7 +127,9 @@ export function DatabaseAssyView({
             </p>
             <h1 className="text-xl font-bold text-slate-900 mt-0.5">Database Assy</h1>
             <p className="text-xs text-slate-500 mt-0.5">
-              Riwayat kalkulasi STD &amp; UMH tersimpan otomatis di penyimpanan lokal browser Anda.
+              {isCloudActive
+                ? 'Setiap perubahan langsung tersimpan ke server Firebase. Data yang dihapus dipindahkan ke Recycle Bin agar mudah di-restore.'
+                : 'Tersimpan di browser lokal. Masuk Google agar semua perubahan & Recycle Bin tersinkron langsung ke server Firebase.'}
             </p>
           </div>
 
@@ -160,6 +168,17 @@ export function DatabaseAssyView({
               <History className="w-3.5 h-3.5 text-[#1E3A8A]" />
               <span>
                 Riwayat Refresh{refreshHistoryCount > 0 ? ` (${refreshHistoryCount})` : ''}
+              </span>
+            </button>
+
+            <button
+              type="button"
+              onClick={onOpenRecycleBin}
+              className="inline-flex items-center gap-2 px-3.5 py-2 rounded-xl bg-white border border-slate-200 text-xs font-semibold text-slate-800 hover:bg-slate-50 transition-colors whitespace-nowrap shrink-0 cursor-pointer"
+            >
+              <Trash2 className="w-3.5 h-3.5 text-slate-600" />
+              <span>
+                Recycle Bin{recycleBinCount > 0 ? ` (${recycleBinCount})` : ''}
               </span>
             </button>
 
@@ -365,9 +384,9 @@ export function DatabaseAssyView({
                                     onDeleteRecord(rec.id);
                                     setConfirmDeleteId(null);
                                   }}
-                                  className="px-2.5 py-1.5 rounded-xl bg-red-600 text-white text-xs font-semibold hover:bg-red-700 cursor-pointer"
+                                  className="px-2.5 py-1.5 rounded-xl bg-red-600 text-white text-xs font-semibold hover:bg-red-700 cursor-pointer whitespace-nowrap"
                                 >
-                                  Ya, Hapus
+                                  Ke Recycle Bin
                                 </button>
                                 <button
                                   type="button"

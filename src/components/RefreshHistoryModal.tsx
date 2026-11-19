@@ -114,7 +114,7 @@ export function RefreshHistoryModal({
             {history.length > 0 && (
               confirmClearAll ? (
                 <div className="inline-flex items-center gap-1.5 bg-red-50 border border-red-200 px-2.5 py-1.5 rounded-xl">
-                  <span className="text-xs font-medium text-red-700">Hapus semua log?</span>
+                  <span className="text-xs font-medium text-red-700">Pindahkan semua log ke Recycle Bin?</span>
                   <button
                     type="button"
                     onClick={() => {
@@ -236,9 +236,9 @@ export function RefreshHistoryModal({
                                     onDeleteEntry(entry.id);
                                     setConfirmDeleteId(null);
                                   }}
-                                  className="px-2 py-0.5 rounded-lg bg-red-600 text-white text-[10px] font-semibold hover:bg-red-700 cursor-pointer"
+                                  className="px-2 py-0.5 rounded-lg bg-red-600 text-white text-[10px] font-semibold hover:bg-red-700 cursor-pointer whitespace-nowrap"
                                 >
-                                  Hapus
+                                  Ke Bin
                                 </button>
                                 <button
                                   type="button"

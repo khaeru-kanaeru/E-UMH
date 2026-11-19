@@ -23,6 +23,8 @@ interface AutoCutFeederViewProps {
   feederList: FeederItem[];
   onUpdateAutoCut: (list: AutoCutItem[], immediate?: boolean) => void;
   onUpdateFeeder: (list: FeederItem[], immediate?: boolean) => void;
+  onDeleteAutoCutItem?: (item: AutoCutItem) => void;
+  onDeleteFeederItem?: (item: FeederItem) => void;
   onResetAutoCut: () => AutoCutItem[];
   onResetFeeder: () => FeederItem[];
 }
@@ -39,6 +41,8 @@ export function AutoCutFeederView({
   feederList,
   onUpdateAutoCut,
   onUpdateFeeder,
+  onDeleteAutoCutItem,
+  onDeleteFeederItem,
   onResetAutoCut,
   onResetFeeder,
 }: AutoCutFeederViewProps) {
@@ -505,6 +509,7 @@ export function AutoCutFeederView({
                             false
                           )
                         }
+                        onBlur={() => onUpdateAutoCut(autoCutList, true)}
                         className="w-24 px-2 py-1 bg-slate-50 border border-slate-200 rounded-lg text-xs focus:bg-white focus:outline-none focus:ring-1 focus:ring-[#1E3A8A]"
                       />
                     </td>
@@ -520,18 +525,27 @@ export function AutoCutFeederView({
                             false
                           )
                         }
+                        onBlur={() => onUpdateAutoCut(autoCutList, true)}
                         className="w-full px-2 py-1 bg-slate-50 border border-slate-200 rounded-lg text-xs font-mono-num font-semibold focus:bg-white focus:outline-none focus:ring-1 focus:ring-[#1E3A8A]"
                       />
                     </td>
                     <td className="py-1.5 px-3 text-right">
                       <button
                         type="button"
-                        onClick={() =>
-                          onUpdateAutoCut(
-                            autoCutList.filter((a) => a.id !== item.id),
-                            true
-                          )
-                        }
+                        onClick={() => {
+                          if (onDeleteAutoCutItem) {
+                            onDeleteAutoCutItem(item);
+                          } else {
+                            onUpdateAutoCut(
+                              autoCutList.filter((a) => a.id !== item.id),
+                              true
+                            );
+                          }
+                          showAcNotice(
+                            'ok',
+                            `Terminal "${item.terminal}" dipindahkan ke Recycle Bin (dapat di-restore).`
+                          );
+                        }}
                         className="p-1.5 rounded-lg text-red-600 hover:bg-red-50 cursor-pointer"
                         aria-label={`Hapus ${item.terminal}`}
                       >
@@ -781,18 +795,27 @@ export function AutoCutFeederView({
                             false
                           )
                         }
+                        onBlur={() => onUpdateFeeder(feederList, true)}
                         className="w-full px-2 py-1 bg-slate-50 border border-slate-200 rounded-lg text-xs font-mono-num font-semibold focus:bg-white focus:outline-none focus:ring-1 focus:ring-[#1E3A8A]"
                       />
                     </td>
                     <td className="py-1.5 px-3 text-right">
                       <button
                         type="button"
-                        onClick={() =>
-                          onUpdateFeeder(
-                            feederList.filter((f) => f.id !== item.id),
-                            true
-                          )
-                        }
+                        onClick={() => {
+                          if (onDeleteFeederItem) {
+                            onDeleteFeederItem(item);
+                          } else {
+                            onUpdateFeeder(
+                              feederList.filter((f) => f.id !== item.id),
+                              true
+                            );
+                          }
+                          showFdNotice(
+                            'ok',
+                            `Wire Seal "${item.seal}" dipindahkan ke Recycle Bin (dapat di-restore).`
+                          );
+                        }}
                         className="p-1.5 rounded-lg text-red-600 hover:bg-red-50 cursor-pointer"
                         aria-label={`Hapus ${item.seal}`}
                       >

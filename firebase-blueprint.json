@@ -52,7 +52,7 @@
     },
     "MasterConfig": {
       "title": "MasterConfig",
-      "description": "User's STD parameters, 2D process matrices, Auto-Cut list, and Feeder list.",
+      "description": "User's STD parameters, 2D process matrices, modular Logic Discs, Auto-Cut list, and Feeder list.",
       "type": "object",
       "properties": {
         "ownerId": {
@@ -77,6 +77,10 @@
         "mcMatrixMap": {
           "type": "object",
           "description": "Manual-(Air)cutting 2D matrix stored as row-keyed numeric arrays."
+        },
+        "processDiscs": {
+          "type": "array",
+          "description": "Modular sub-process Logic Disc definitions (max 100)."
         },
         "autoCutList": {
           "type": "array",
@@ -257,6 +261,87 @@
         "affectedDiffs",
         "createdAt"
       ]
+    },
+    "RecycleBinItem": {
+      "title": "RecycleBinItem",
+      "description": "Soft-deleted record stored in Firebase recycleBin directory for easy restore or permanent deletion.",
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$",
+          "description": "Unique recycle bin document ID."
+        },
+        "ownerId": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$",
+          "description": "Owner Firebase Auth UID."
+        },
+        "itemType": {
+          "type": "string",
+          "enum": [
+            "assy_record",
+            "refresh_history",
+            "auto_cut_item",
+            "feeder_item",
+            "process_disc"
+          ],
+          "description": "Category of soft-deleted entity."
+        },
+        "originalCollection": {
+          "type": "string",
+          "enum": ["assyRecords", "refreshHistory", "masterConfigs"],
+          "description": "Original Firestore collection path."
+        },
+        "originalId": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$",
+          "description": "Original ID of the deleted record or master item."
+        },
+        "title": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 160,
+          "description": "Primary display title for the deleted item."
+        },
+        "subtitle": {
+          "type": "string",
+          "maxLength": 240,
+          "description": "Secondary metadata summary for the deleted item."
+        },
+        "payload": {
+          "type": "object",
+          "description": "Full snapshot payload required to restore the item."
+        },
+        "deletedAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Server timestamp when the item was moved to Recycle Bin."
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Server creation timestamp."
+        }
+      },
+      "required": [
+        "id",
+        "ownerId",
+        "itemType",
+        "originalCollection",
+        "originalId",
+        "title",
+        "subtitle",
+        "payload",
+        "deletedAt",
+        "createdAt"
+      ]
     }
   },
   "firestore": {
@@ -270,7 +355,7 @@
       "schema": {
         "$ref": "#/entities/MasterConfig"
       },
-      "description": "Per-user Master STD database, 2D matrices, Auto-Cut list, and Feeder list."
+      "description": "Per-user Master STD database, 2D matrices, Logic Discs, Auto-Cut list, and Feeder list."
     },
     "/assyRecords/{recordId}": {
       "schema": {
@@ -283,6 +368,12 @@
         "$ref": "#/entities/RefreshHistoryEntry"
       },
       "description": "User-owned UMH Refresh audit history logs."
+    },
+    "/recycleBin/{itemId}": {
+      "schema": {
+        "$ref": "#/entities/RecycleBinItem"
+      },
+      "description": "User-owned Recycle Bin storing soft-deleted Assy records, refresh history logs, and master items for restoration."
     }
   }
 }
