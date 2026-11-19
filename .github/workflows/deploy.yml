@@ -23,11 +23,12 @@ jobs:
       - name: Setup Node
         uses: actions/setup-node@v4
         with:
-          node-version: 20
+          node-version: 22
 
       - name: Install dependencies and build
         run: |
           npm install --legacy-peer-deps
+          npm install --no-save --legacy-peer-deps react-is
           npm run build
 
       - name: Upload artifact
