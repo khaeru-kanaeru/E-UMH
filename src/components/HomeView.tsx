@@ -314,7 +314,7 @@ export function HomeView({
 
           <div className="lg:col-span-5 relative min-h-[240px] lg:min-h-[320px] bg-slate-900">
             <img
-              src="/src/assets/images/wire_harness_studio_hero_1794972130349.jpg"
+              src="./src/assets/images/wire_harness_studio_hero_1794972130349.jpg"
               alt="Rakitan Wire Harness otomotif dengan konektor polimer dan terminal kuningan"
               referrerPolicy="no-referrer"
               className="w-full h-full object-cover lg:h-full"
