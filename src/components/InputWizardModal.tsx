@@ -1,4 +1,5 @@
-import { useMemo, useRef, useState } from 'react';
+import { useEffect, useMemo, useReducer, useRef, useState } from 'react';
+import { useEnterKeyNavigation } from '../hooks/useEnterKeyNavigation';
 import {
   AlertCircle,
   Check,
@@ -68,6 +69,42 @@ interface InputWizardModalProps {
   onSaveAndCalculate: (payload: AssyInputPayload) => void;
 }
 
+interface AllowanceState {
+  mode: AllowanceMode | '';
+  percentageStr: string;
+}
+
+type AllowanceAction =
+  | { type: 'SET_MODE'; mode: AllowanceMode | '' }
+  | { type: 'SET_PERCENTAGE'; percentageStr: string }
+  | { type: 'HYDRATE'; mode: AllowanceMode | ''; percentageStr: string };
+
+function requiresAllowanceInput(mode: AllowanceMode | ''): boolean {
+  return mode === 'by_process' || mode === 'by_final';
+}
+
+function allowanceReducer(state: AllowanceState, action: AllowanceAction): AllowanceState {
+  switch (action.type) {
+    case 'SET_MODE':
+      return {
+        mode: action.mode,
+        percentageStr: requiresAllowanceInput(action.mode) ? state.percentageStr : '',
+      };
+    case 'SET_PERCENTAGE':
+      return {
+        ...state,
+        percentageStr: requiresAllowanceInput(state.mode) ? action.percentageStr : '',
+      };
+    case 'HYDRATE':
+      return {
+        mode: action.mode,
+        percentageStr: requiresAllowanceInput(action.mode) ? action.percentageStr : '',
+      };
+    default:
+      return state;
+  }
+}
+
 export function InputWizardModal({
   initialPayload,
   autoCutList,
@@ -87,15 +124,24 @@ export function InputWizardModal({
       ? String(initialPayload.params.lot)
       : String(DEFAULT_LOT_SIZE)
   );
-  const [allowanceMode, setAllowanceMode] = useState<AllowanceMode | ''>(
-    initialPayload?.params.allowanceMode ?? ''
-  );
-  const [pfdAllowanceStr, setPfdAllowanceStr] = useState<string>(
-    initialPayload && initialPayload.params.allowanceMode !== 'none'
-      ? String(initialPayload.params.pfdAllowancePct ?? '')
-      : ''
-  );
+  const [allowanceState, dispatchAllowance] = useReducer(allowanceReducer, undefined, () => {
+    const initialMode: AllowanceMode | '' = initialPayload?.params.allowanceMode ?? '';
+    return {
+      mode: initialMode,
+      percentageStr:
+        initialPayload && requiresAllowanceInput(initialMode)
+          ? String(initialPayload.params.pfdAllowancePct ?? '')
+          : '',
+    };
+  });
+  const allowanceMode = allowanceState.mode;
+  const pfdAllowanceStr = allowanceState.percentageStr;
+  const showAllowanceInput = requiresAllowanceInput(allowanceMode);
+
   const [validationError, setValidationError] = useState<string | null>(null);
+  const [validationField, setValidationField] = useState<
+    'masterCct' | 'lot' | 'allowanceMode' | 'pfdAllowance' | null
+  >(null);
 
   const [assemblyComponents, setAssemblyComponents] = useState<AssemblyComponents>(
     initialPayload?.assemblyComponents ?? {
@@ -125,6 +171,7 @@ export function InputWizardModal({
   const [previewTarget, setPreviewTarget] = useState<'partlist' | 'ppcs' | 'assembly' | null>(null);
 
   const formContainerRef = useRef<HTMLDivElement>(null);
+  const assyNoInputRef = useRef<HTMLInputElement>(null);
   const cctInputRef = useRef<HTMLInputElement>(null);
   const lotInputRef = useRef<HTMLInputElement>(null);
   const modeSelectRef = useRef<HTMLSelectElement>(null);
@@ -139,43 +186,24 @@ export function InputWizardModal({
   const parsedMasterCct = masterCctStr.trim() === '' ? 0 : Math.max(0, Number(masterCctStr) || 0);
   const parsedLot = lotStr.trim() === '' ? 0 : Math.max(0, Number(lotStr) || 0);
   const parsedAllowancePct =
-    allowanceMode === 'none' || pfdAllowanceStr.trim() === ''
+    !showAllowanceInput || pfdAllowanceStr.trim() === ''
       ? 0
       : Math.max(0, Number(pfdAllowanceStr) || 0);
 
-  // Lean keyboard input: Enter moves focus to the next visible field (Shift+Enter moves backward)
-  const handleLeanEnterKeyDown = (e: React.KeyboardEvent<HTMLDivElement>) => {
-    if (e.key !== 'Enter') return;
-    const target = e.target as HTMLElement | null;
-    if (!target) return;
-    const tag = target.tagName;
-    if (tag !== 'INPUT' && tag !== 'SELECT') return;
-    const inputEl = target as HTMLInputElement;
-    if (inputEl.type === 'file' || inputEl.type === 'button' || inputEl.type === 'submit') return;
+  // Ref-backed Enter key navigation: cycles through visible inputs & visually manages focus
+  const { activeFieldIndex, totalFields, focusField } = useEnterKeyNavigation(formContainerRef, {
+    submitRef: submitButtonRef,
+    disabled: Boolean(previewTarget),
+  });
 
-    e.preventDefault();
-    const container = formContainerRef.current;
-    if (!container) return;
+  // Auto-focus first input field when opening the modal for immediate keyboard entry
+  useEffect(() => {
+    focusField(assyNoInputRef.current);
+  }, [focusField]);
 
-    const focusables = Array.from(
-      container.querySelectorAll<HTMLInputElement | HTMLSelectElement>(
-        'input:not([type="hidden"]):not([type="file"]):not(:disabled), select:not(:disabled)'
-      )
-    ).filter((el) => el.offsetParent !== null);
-
-    const currentIdx = focusables.indexOf(target as HTMLInputElement | HTMLSelectElement);
-    if (currentIdx === -1) return;
-
-    const nextIdx = e.shiftKey ? currentIdx - 1 : currentIdx + 1;
-    if (nextIdx >= 0 && nextIdx < focusables.length) {
-      const nextEl = focusables[nextIdx];
-      nextEl.focus();
-      if (nextEl.tagName === 'INPUT') {
-        (nextEl as HTMLInputElement).select();
-      }
-    } else if (!e.shiftKey) {
-      submitButtonRef.current?.focus();
-    }
+  const clearValidation = () => {
+    if (validationError) setValidationError(null);
+    if (validationField) setValidationField(null);
   };
 
   const candidateTerminals = useMemo(
@@ -269,7 +297,7 @@ export function InputWizardModal({
   const handleTemplateUpload = async (file: File) => {
     setIsParsingTemplate(true);
     setTemplateImportReport(null);
-    setValidationError(null);
+    clearValidation();
     setStatusMessage(`Memproses template "${file.name}"...`);
     try {
       const parsed = await parseMasterWorkbook(file, autoCutList, feederList);
@@ -326,8 +354,11 @@ export function InputWizardModal({
       setCustomer(nextCustomer);
       if (nextMasterCct > 0) setMasterCctStr(String(nextMasterCct));
       setLotStr(String(nextLot));
-      if (nextMode) setAllowanceMode(nextMode);
-      setPfdAllowanceStr(nextPfdStr);
+      dispatchAllowance({
+        type: 'HYDRATE',
+        mode: nextMode,
+        percentageStr: nextPfdStr,
+      });
 
       if (parsed.partList) setPartList(parsed.partList);
       if (parsed.ppcsList) setPpcsList(parsed.ppcsList);
@@ -514,14 +545,17 @@ export function InputWizardModal({
     setCustomer(SAMPLE_KHR_PAYLOAD.params.customer);
     setMasterCctStr(String(SAMPLE_KHR_PAYLOAD.params.masterCct));
     setLotStr(String(SAMPLE_KHR_PAYLOAD.params.lot ?? DEFAULT_LOT_SIZE));
-    setAllowanceMode(SAMPLE_KHR_PAYLOAD.params.allowanceMode);
-    setPfdAllowanceStr(String(SAMPLE_KHR_PAYLOAD.params.pfdAllowancePct));
+    dispatchAllowance({
+      type: 'HYDRATE',
+      mode: SAMPLE_KHR_PAYLOAD.params.allowanceMode,
+      percentageStr: String(SAMPLE_KHR_PAYLOAD.params.pfdAllowancePct),
+    });
     setAssemblyComponents({ ...SAMPLE_KHR_PAYLOAD.assemblyComponents });
     setPartList([...SAMPLE_KHR_PAYLOAD.partList]);
     setPpcsList([...SAMPLE_KHR_PAYLOAD.ppcsList]);
     setAssemblyCotList([...SAMPLE_KHR_PAYLOAD.assemblyCotList]);
     setTerminalRatios({ ...SAMPLE_KHR_PAYLOAD.terminalRatios });
-    setValidationError(null);
+    clearValidation();
     setStatusMessage('Parameter & Assembly COT KHR55431-00 dimuat.');
   };
 
@@ -536,30 +570,40 @@ export function InputWizardModal({
 
   const handleSubmit = () => {
     setValidationError(null);
+    setValidationField(null);
 
     if (masterCctStr.trim() === '' || parsedMasterCct <= 0) {
       setValidationError('Jumlah CCT wajib diisi dengan angka lebih dari 0.');
-      cctInputRef.current?.focus();
+      setValidationField('masterCct');
+      focusField(cctInputRef.current);
       return;
     }
 
     if (lotStr.trim() === '' || parsedLot < 1) {
       setValidationError('Nilai LOT wajib diisi (minimal 1).');
-      lotInputRef.current?.focus();
+      setValidationField('lot');
+      focusField(lotInputRef.current);
       return;
     }
 
     if (!allowanceMode) {
       setValidationError('Pilih Metode Distribusi Allowance terlebih dahulu (0, 1, atau 2).');
-      modeSelectRef.current?.focus();
+      setValidationField('allowanceMode');
+      focusField(modeSelectRef.current);
       return;
     }
 
-    if (allowanceMode !== 'none' && pfdAllowanceStr.trim() === '') {
+    if (
+      showAllowanceInput &&
+      (pfdAllowanceStr.trim() === '' ||
+        !Number.isFinite(Number(pfdAllowanceStr)) ||
+        Number(pfdAllowanceStr) < 0)
+    ) {
       setValidationError(
         'Masukkan angka % Allowance PFD terlebih dahulu untuk metode yang dipilih.'
       );
-      allowanceInputRef.current?.focus();
+      setValidationField('pfdAllowance');
+      focusField(allowanceInputRef.current);
       return;
     }
 
@@ -709,7 +753,7 @@ export function InputWizardModal({
                   </span>
                   <button
                     type="button"
-                    onClick={() => setValidationError(null)}
+                    onClick={clearValidation}
                     className="text-red-500 hover:text-red-800 cursor-pointer"
                   >
                     <X className="w-3.5 h-3.5" />
@@ -803,10 +847,9 @@ export function InputWizardModal({
             </div>
           )}
 
-          {/* 3-Section Landscape Grid (Enter navigates column-by-column) */}
+          {/* 3-Section Landscape Grid (Enter navigates field-by-field via useEnterKeyNavigation) */}
           <div
             ref={formContainerRef}
-            onKeyDown={handleLeanEnterKeyDown}
             className="p-5 grid grid-cols-1 xl:grid-cols-12 gap-0 xl:gap-0"
           >
             <div className="xl:col-span-12 rounded-xl border border-slate-200 bg-white grid grid-cols-1 xl:grid-cols-3 divide-y xl:divide-y-0 xl:divide-x divide-slate-200">
@@ -822,8 +865,17 @@ export function InputWizardModal({
                         Identitas Assy, jumlah CCT, LOT, dan metode allowance.
                       </p>
                     </div>
-                    <span className="text-[10px] font-mono-num font-semibold text-slate-500 bg-slate-100 border border-slate-200 px-2 py-0.5 rounded-md whitespace-nowrap shrink-0">
-                      Enter ↵ lanjut
+                    <span
+                      title="Tekan Enter untuk lanjut ke kolom berikutnya, Shift+Enter untuk mundur"
+                      className={`text-[10px] font-mono-num font-semibold border px-2 py-0.5 rounded-md whitespace-nowrap shrink-0 transition-colors ${
+                        activeFieldIndex >= 0
+                          ? 'text-[#1E3A8A] bg-blue-50 border-blue-200'
+                          : 'text-slate-500 bg-slate-100 border-slate-200'
+                      }`}
+                    >
+                      {activeFieldIndex >= 0 && totalFields > 0
+                        ? `Kolom ${activeFieldIndex + 1}/${totalFields} · Enter ↵`
+                        : 'Enter ↵ lanjut'}
                     </span>
                   </div>
 
@@ -831,11 +883,12 @@ export function InputWizardModal({
                     <label className="block space-y-1">
                       <span className="text-xs font-semibold text-slate-700">Assy Number</span>
                       <input
+                        ref={assyNoInputRef}
                         type="text"
                         value={assyNo}
                         onChange={(e) => {
                           setAssyNo(e.target.value);
-                          setValidationError(null);
+                          clearValidation();
                         }}
                         placeholder="Contoh: KHR55471-00"
                         className="w-full px-3 py-2 text-sm font-mono-num bg-slate-50 border border-slate-200 rounded-lg focus:bg-white focus:outline-none focus:ring-2 focus:ring-[#1E3A8A]/20 focus:border-[#1E3A8A]"
@@ -864,12 +917,18 @@ export function InputWizardModal({
                           ref={cctInputRef}
                           type="number"
                           min="1"
+                          required
+                          aria-required="true"
                           value={masterCctStr}
                           onChange={(e) => {
                             setMasterCctStr(e.target.value);
-                            setValidationError(null);
+                            clearValidation();
                           }}
-                          className="w-full px-3 py-2 text-sm font-mono-num bg-slate-50 border border-slate-200 rounded-lg focus:bg-white focus:outline-none focus:ring-2 focus:ring-[#1E3A8A]/20 focus:border-[#1E3A8A]"
+                          className={`w-full px-3 py-2 text-sm font-mono-num bg-slate-50 border rounded-lg focus:bg-white focus:outline-none focus:ring-2 ${
+                            validationField === 'masterCct'
+                              ? 'border-red-400 focus:border-red-500 focus:ring-red-500/20'
+                              : 'border-slate-200 focus:border-[#1E3A8A] focus:ring-[#1E3A8A]/20'
+                          }`}
                         />
                       </label>
 
@@ -881,12 +940,18 @@ export function InputWizardModal({
                           ref={lotInputRef}
                           type="number"
                           min="1"
+                          required
+                          aria-required="true"
                           value={lotStr}
                           onChange={(e) => {
                             setLotStr(e.target.value);
-                            setValidationError(null);
+                            clearValidation();
                           }}
-                          className="w-full px-3 py-2 text-sm font-mono-num bg-slate-50 border border-slate-200 rounded-lg focus:bg-white focus:outline-none focus:ring-2 focus:ring-[#1E3A8A]/20 focus:border-[#1E3A8A]"
+                          className={`w-full px-3 py-2 text-sm font-mono-num bg-slate-50 border rounded-lg focus:bg-white focus:outline-none focus:ring-2 ${
+                            validationField === 'lot'
+                              ? 'border-red-400 focus:border-red-500 focus:ring-red-500/20'
+                              : 'border-slate-200 focus:border-[#1E3A8A] focus:ring-[#1E3A8A]/20'
+                          }`}
                         />
                       </label>
                     </div>
@@ -897,30 +962,39 @@ export function InputWizardModal({
                       </span>
                       <select
                         ref={modeSelectRef}
+                        required
+                        aria-required="true"
                         value={allowanceMode}
                         onChange={(e) => {
                           const next = e.target.value as AllowanceMode | '';
-                          setAllowanceMode(next);
-                          if (next === 'none' || next === '') {
-                            setPfdAllowanceStr('');
+                          const wasHidden = !showAllowanceInput;
+                          dispatchAllowance({ type: 'SET_MODE', mode: next });
+                          if (wasHidden && requiresAllowanceInput(next)) {
+                            requestAnimationFrame(() => {
+                              focusField(allowanceInputRef.current);
+                            });
                           }
-                          setValidationError(null);
+                          clearValidation();
                         }}
-                        className={`w-full px-3 py-2 text-sm bg-slate-50 border border-slate-200 rounded-lg focus:bg-white focus:outline-none focus:ring-2 focus:ring-[#1E3A8A]/20 focus:border-[#1E3A8A] ${
-                          allowanceMode === '' ? 'text-slate-500' : 'text-slate-900 font-medium'
-                        }`}
+                        className={`w-full px-3 py-2 text-sm bg-slate-50 border rounded-lg focus:bg-white focus:outline-none focus:ring-2 transition-colors ${
+                          validationField === 'allowanceMode'
+                            ? 'border-red-400 focus:border-red-500 focus:ring-red-500/20'
+                            : 'border-slate-200 focus:border-[#1E3A8A] focus:ring-[#1E3A8A]/25'
+                        } ${allowanceMode === '' ? 'text-slate-500' : 'text-slate-900 font-medium'}`}
                       >
-                        <option value="">-- Pilih Metode Distribusi --</option>
+                        <option value="" disabled>
+                          -- Pilih Metode Distribusi (Wajib) --
+                        </option>
                         <option value="none">0. Tanpa Allowance (Base / 0%)</option>
                         <option value="by_process">1. By Proses (+% Tiap Proses → Substep)</option>
                         <option value="by_final">2. By Hasil Akhir (Distribusi Kesulitan → Substep)</option>
                       </select>
                     </label>
 
-                    {allowanceMode !== '' && allowanceMode !== 'none' && (
+                    {showAllowanceInput && (
                       <label className="block space-y-1">
                         <span className="text-xs font-semibold text-slate-700">
-                          Allowance PFD (%) <span className="text-red-500">*</span>
+                          % Allowance PFD <span className="text-red-500">*</span>
                         </span>
                         <input
                           ref={allowanceInputRef}
@@ -928,13 +1002,22 @@ export function InputWizardModal({
                           step="0.5"
                           min="0"
                           max="100"
+                          required
+                          aria-required="true"
                           value={pfdAllowanceStr}
                           onChange={(e) => {
-                            setPfdAllowanceStr(e.target.value);
-                            setValidationError(null);
+                            dispatchAllowance({
+                              type: 'SET_PERCENTAGE',
+                              percentageStr: e.target.value,
+                            });
+                            clearValidation();
                           }}
                           placeholder="Isi persentase allowance (cth: 15)"
-                          className="w-full px-3 py-2 text-sm font-mono-num bg-slate-50 border border-slate-200 rounded-lg focus:bg-white focus:outline-none focus:ring-2 focus:ring-[#1E3A8A]/20 focus:border-[#1E3A8A]"
+                          className={`w-full px-3 py-2 text-sm font-mono-num bg-slate-50 border rounded-lg focus:bg-white focus:outline-none focus:ring-2 transition-colors ${
+                            validationField === 'pfdAllowance'
+                              ? 'border-red-400 focus:border-red-500 focus:ring-red-500/20'
+                              : 'border-slate-200 focus:border-[#1E3A8A] focus:ring-[#1E3A8A]/25'
+                          }`}
                         />
                       </label>
                     )}
@@ -1090,7 +1173,7 @@ export function InputWizardModal({
                           max="100"
                           value={applyAllRatio}
                           onChange={(e) => setApplyAllRatio(Number(e.target.value))}
-                          className="w-14 text-right font-mono-num text-xs px-2 py-1 bg-slate-50 border border-slate-200 rounded-md focus:bg-white focus:outline-none"
+                          className="w-14 text-right font-mono-num text-xs px-2 py-1 bg-slate-50 border border-slate-200 rounded-md focus:bg-white focus:outline-none focus:ring-2 focus:ring-[#1E3A8A]/25 focus:border-[#1E3A8A] transition-colors"
                         />
                         <span className="text-[11px] text-slate-500">%</span>
                         <button
@@ -1115,7 +1198,7 @@ export function InputWizardModal({
                         return (
                           <div
                             key={item.partNo}
-                            className="px-3 py-2 flex items-center justify-between gap-2 bg-slate-50/60"
+                            className="px-3 py-2 flex items-center justify-between gap-2 bg-slate-50/60 focus-within:bg-blue-50/40 transition-colors"
                           >
                             <div className="min-w-0">
                               <p className="text-xs font-semibold font-mono-num text-slate-900 truncate">
@@ -1138,7 +1221,7 @@ export function InputWizardModal({
                                     [item.partNo]: Math.max(0, Math.min(100, Number(e.target.value))),
                                   })
                                 }
-                                className="w-16 text-right font-mono-num text-xs font-semibold px-2 py-1 bg-white border border-slate-200 rounded-md focus:outline-none focus:ring-2 focus:ring-[#1E3A8A]/20"
+                                className="w-16 text-right font-mono-num text-xs font-semibold px-2 py-1 bg-white border border-slate-200 rounded-md focus:outline-none focus:ring-2 focus:ring-[#1E3A8A]/25 focus:border-[#1E3A8A] transition-colors"
                               />
                               <span className="text-[11px] text-slate-500 font-semibold">%</span>
                             </div>
@@ -1229,7 +1312,7 @@ export function InputWizardModal({
                             markerQty: Math.max(0, Number(e.target.value)),
                           })
                         }
-                        className="w-full px-3 py-2 text-sm font-mono-num bg-slate-50 border border-slate-200 rounded-lg focus:bg-white focus:outline-none focus:ring-2 focus:ring-[#1E3A8A]/20"
+                        className="w-full px-3 py-2 text-sm font-mono-num bg-slate-50 border border-slate-200 rounded-lg focus:bg-white focus:outline-none focus:ring-2 focus:ring-[#1E3A8A]/25 focus:border-[#1E3A8A] transition-colors"
                       />
                     </label>
 
@@ -1245,7 +1328,7 @@ export function InputWizardModal({
                             spotTapeQty: Math.max(0, Number(e.target.value)),
                           })
                         }
-                        className="w-full px-3 py-2 text-sm font-mono-num bg-slate-50 border border-slate-200 rounded-lg focus:bg-white focus:outline-none focus:ring-2 focus:ring-[#1E3A8A]/20"
+                        className="w-full px-3 py-2 text-sm font-mono-num bg-slate-50 border border-slate-200 rounded-lg focus:bg-white focus:outline-none focus:ring-2 focus:ring-[#1E3A8A]/25 focus:border-[#1E3A8A] transition-colors"
                       />
                     </label>
 
@@ -1261,7 +1344,7 @@ export function InputWizardModal({
                             namePlateQty: Math.max(0, Number(e.target.value)),
                           })
                         }
-                        className="w-full px-3 py-2 text-sm font-mono-num bg-slate-50 border border-slate-200 rounded-lg focus:bg-white focus:outline-none focus:ring-2 focus:ring-[#1E3A8A]/20"
+                        className="w-full px-3 py-2 text-sm font-mono-num bg-slate-50 border border-slate-200 rounded-lg focus:bg-white focus:outline-none focus:ring-2 focus:ring-[#1E3A8A]/25 focus:border-[#1E3A8A] transition-colors"
                       />
                     </label>
 
@@ -1277,7 +1360,7 @@ export function InputWizardModal({
                             clipQty: Math.max(0, Number(e.target.value)),
                           })
                         }
-                        className="w-full px-3 py-2 text-sm font-mono-num bg-slate-50 border border-slate-200 rounded-lg focus:bg-white focus:outline-none focus:ring-2 focus:ring-[#1E3A8A]/20"
+                        className="w-full px-3 py-2 text-sm font-mono-num bg-slate-50 border border-slate-200 rounded-lg focus:bg-white focus:outline-none focus:ring-2 focus:ring-[#1E3A8A]/25 focus:border-[#1E3A8A] transition-colors"
                       />
                     </label>
 
@@ -1293,7 +1376,7 @@ export function InputWizardModal({
                             clampQty: Math.max(0, Number(e.target.value)),
                           })
                         }
-                        className="w-full px-3 py-2 text-sm font-mono-num bg-slate-50 border border-slate-200 rounded-lg focus:bg-white focus:outline-none focus:ring-2 focus:ring-[#1E3A8A]/20"
+                        className="w-full px-3 py-2 text-sm font-mono-num bg-slate-50 border border-slate-200 rounded-lg focus:bg-white focus:outline-none focus:ring-2 focus:ring-[#1E3A8A]/25 focus:border-[#1E3A8A] transition-colors"
                       />
                     </label>
                   </div>
@@ -1325,7 +1408,7 @@ export function InputWizardModal({
               ref={submitButtonRef}
               type="button"
               onClick={handleSubmit}
-              className="inline-flex items-center gap-1.5 px-5 py-2 rounded-lg bg-[#047857] text-white text-xs font-semibold hover:bg-[#065F46] cursor-pointer whitespace-nowrap"
+              className="inline-flex items-center gap-1.5 px-5 py-2 rounded-lg bg-[#047857] text-white text-xs font-semibold hover:bg-[#065F46] focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-[#047857] cursor-pointer whitespace-nowrap transition-shadow"
             >
               <Check className="w-4 h-4" />
               <span>Kalkulasi &amp; Simpan Hasil</span>
