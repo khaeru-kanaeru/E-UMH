@@ -36,8 +36,20 @@ export interface PartListItem {
   partNumber: string;
   partName: string;
   qty: number;
+  unit?: string;
   routingId: number;
   desc: string;
+}
+
+export interface MarkerListItem {
+  no?: string;
+  assyNo?: string;
+  partNo: string;
+  partName: string;
+  qty: number;
+  unit?: string;
+  proses?: string;
+  supply?: string;
 }
 
 export interface PpcsWireItem {
@@ -77,6 +89,15 @@ export interface PpcsWireItem {
 export interface AssemblyCotItem {
   type: 'C' | 'T' | 'B';
   tl: number;
+  assyNo?: string;
+  partName?: string;
+  tubeNo?: string;
+  tubeName?: string;
+  diaCode?: string;
+  qty?: number;
+  unit?: string;
+  proses?: string;
+  supply?: string;
 }
 
 export type TerminalRatios = Record<string, number>;
@@ -104,7 +125,7 @@ export interface StdParamItem {
 }
 
 export interface Matrix2D {
-  id: 'acMatrix' | 'saMatrix' | 'mcMatrix';
+  id: 'acMatrix' | 'saMatrix' | 'mcMatrix' | 'cotMatrix' | 'settingWireMatrix';
   title: string;
   rowLabel: string;
   colLabel: string;
@@ -160,6 +181,8 @@ export interface StdDatabase {
   acMatrix: number[][];
   saMatrix: number[][];
   mcMatrix: number[][];
+  cotMatrix: number[][];
+  settingWireMatrix: number[][];
   processDiscs?: ProcessLogicDisc[];
 }
 

@@ -1,4 +1,5 @@
 import XLSX from 'xlsx-js-style';
+import { extractCotDiaCode } from '../data/cotMasterV2';
 import { CONDITIONAL_AC_TERMS } from '../data/defaultStdDb';
 import {
   AllowanceMode,
@@ -7,10 +8,12 @@ import {
   AssyParams,
   AutoCutItem,
   FeederItem,
+  MarkerListItem,
   PartListItem,
   PpcsWireItem,
   TerminalRatios,
 } from '../types/umh';
+import { calculateSpotTapeFromPartList } from './spotTapeCalculator';
 
 function yieldToMain(): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, 0));
@@ -57,7 +60,8 @@ function enrichPartListRowFast(
   qty: number,
   routingId: number,
   aclLookup: ReturnType<typeof buildAutoCutLookup>,
-  flMap: Map<string, string>
+  flMap: Map<string, string>,
+  unit?: string
 ): PartListItem {
   let desc = '';
   const pnLower = partName.toLowerCase();
@@ -78,7 +82,17 @@ function enrichPartListRowFast(
     if (proc) desc = proc;
   }
 
-  return { customer, assyNo, partNumber, partName, qty, routingId, desc };
+  const cleanUnit = unit ? unit.trim() : '';
+  return {
+    customer,
+    assyNo,
+    partNumber,
+    partName,
+    qty,
+    ...(cleanUnit ? { unit: cleanUnit } : {}),
+    routingId,
+    desc,
+  };
 }
 
 /**
@@ -289,6 +303,7 @@ interface DetectedPartListHeader {
     pn: number;
     pname: number;
     qty: number;
+    unit: number;
     rid: number;
     supply: number;
   };
@@ -296,6 +311,7 @@ interface DetectedPartListHeader {
     pn: number;
     pname: number;
     qty: number;
+    unit: number;
     rid: number;
     supply: number;
   };
@@ -455,6 +471,7 @@ function detectPartListHeader(grid: unknown[][]): DetectedPartListHeader | null 
             pn: pnIdx,
             pname: nameIdx,
             qty: resolvedQtyIdx,
+            unit: unitIdx,
             rid: ridIdx,
             supply: supplyIdx,
           },
@@ -462,6 +479,7 @@ function detectPartListHeader(grid: unknown[][]): DetectedPartListHeader | null 
             pn: findNextHeaderCol(pnIdx),
             pname: findNextHeaderCol(nameIdx),
             qty: findNextHeaderCol(resolvedQtyIdx),
+            unit: findNextHeaderCol(unitIdx),
             rid: findNextHeaderCol(ridIdx),
             supply: findNextHeaderCol(supplyIdx),
           },
@@ -505,22 +523,32 @@ export function parsePartListFromGrid(
   const detected = detectPartListHeader(grid);
   const colMap = detected
     ? detected.colMap
-    : { cust: 1, assy: 2, pn: 3, pname: 4, qty: 5, rid: 6, supply: -1 };
+    : { cust: 1, assy: 2, pn: 3, pname: 4, qty: 5, unit: -1, rid: 6, supply: -1 };
   const colEnds = detected
     ? detected.colEnds
-    : { pn: 4, pname: 5, qty: 6, rid: 7, supply: -1 };
+    : { pn: 4, pname: 5, qty: 6, unit: -1, rid: 7, supply: -1 };
   const startRow = detected ? detected.startRow : 0;
 
   for (let r = startRow; r < grid.length; r++) {
     const cols = grid[r];
     if (!cols || cols.length < 3) continue;
     const rowUpper = cols.map((c) => normalizeHeaderLabel(c));
-    // Stop if another stacked section starts
+    // Stop cleanly if another stacked section or revision/approval footer starts
     if (
       r > startRow &&
       (rowUpper.includes('CCT NO') ||
         rowUpper.includes('TERMINAL R') ||
-        (rowUpper.includes('TYPE') && rowUpper.includes('TL')))
+        (rowUpper.includes('TYPE') && rowUpper.includes('TL')) ||
+        rowUpper.some(
+          (cell) =>
+            cell.includes('HISTORY REVISI') ||
+            cell === 'CONFIRM OK' ||
+            cell === 'DISETUJUI' ||
+            cell === 'DIPERIKSA' ||
+            cell === 'DIBUAT'
+        ) ||
+        (rowUpper[0] === 'REVISI' &&
+          (rowUpper.includes('TANGGAL') || rowUpper.includes('POINT REVISI'))))
     ) {
       break;
     }
@@ -552,6 +580,8 @@ export function parsePartListFromGrid(
 
     const rawQty = pickCellInSpan(cols, colMap.qty, colEnds.qty);
     const qty = parseNumeric(rawQty);
+    const rawUnit = colMap.unit >= 0 ? pickCellInSpan(cols, colMap.unit, colEnds.unit) : '';
+    const unit = !isInvalidCellValue(rawUnit) ? rawUnit : '';
     let routingId = 0;
     const rawRid = colMap.rid >= 0 ? pickCellInSpan(cols, colMap.rid, colEnds.rid) : '';
     if (rawRid !== '') {
@@ -562,7 +592,7 @@ export function parsePartListFromGrid(
     }
 
     rows.push(
-      enrichPartListRowFast(customer, assyNo, partNumber, partName, qty, routingId, aclLookup, flMap)
+      enrichPartListRowFast(customer, assyNo, partNumber, partName, qty, routingId, aclLookup, flMap, unit)
     );
   }
   return rows;
@@ -579,6 +609,7 @@ interface PpcsColMap {
   to: number;
   jointNo: number;
   twist: number;
+  wireShield: number;
   tubeR: number;
   tubeF: number;
   hd: number;
@@ -632,7 +663,7 @@ function isPpcsGroupHeader(raw: string): boolean {
 }
 
 const KNOWN_WIRE_KIND_RE =
-  /^(AV|AVS|AVSS|AVSSH|CAVS|CIVUS|AESSX|AEX|TXL|GXL|SXL|FLRY|FLR|UL|KIV|TV|MVVS|SHIELD|COAX|TWIST)/i;
+  /^(AV|AVS|AVSS|AVSSH|AVSSCS|AVSSX|AVX|AVXS|CAVS|CIVUS|AESSX|AEX|APEXBS|PEXBS|SEF|SF|TXL|GXL|SXL|FLRY|FLR|UL|KIV|TV|MVVS|SHIELD|COAX|TWIST)/i;
 
 function isCctColLabel(h: string): boolean {
   const t = normalizePpcsToken(h);
@@ -703,8 +734,13 @@ function isClColLabel(h: string): boolean {
   return (
     t === 'C L' ||
     t === 'CL' ||
+    t === 'C LENGTH' ||
+    t === 'C LENGTH MM' ||
+    t === 'CLENGTH' ||
     t === 'CUT LENGTH' ||
     t === 'CUTTING LENGTH' ||
+    t === 'CUTTING L' ||
+    t === 'CUTTING L MM' ||
     t === 'WIRE LENGTH' ||
     t === 'LENGTH' ||
     t === 'PANJANG' ||
@@ -730,6 +766,7 @@ type PpcsFieldKind =
   | 'to'
   | 'jointNo'
   | 'twist'
+  | 'wireShield'
   | 'hd'
   | 'sd'
   | 'tube'
@@ -925,9 +962,14 @@ function classifyPpcsColumn(leafRaw: string, topRaw: string, fullRaw: string): C
     leafTok === 'J N' ||
     leafTok === 'JN' ||
     leafTok === 'JNT' ||
+    leafTok === 'J DWG' ||
+    leafTok === 'JDWG' ||
+    leafTok === 'JOINT DWG' ||
     leafTok === 'SPLICE' ||
     leafTok === 'SPLICE NO' ||
     fullTok === 'JOINT NO' ||
+    fullTok === 'J DWG' ||
+    fullTok === 'JDWG' ||
     fullTok === 'NO JOINT' ||
     fullTok === 'JOINT CODE'
   ) {
@@ -945,10 +987,24 @@ function classifyPpcsColumn(leafRaw: string, topRaw: string, fullRaw: string): C
     return { field: 'twist', side: null, slot: null };
   }
   if (
+    leafTok === 'WIRE SHIELD' ||
+    leafTok === 'SHIELD' ||
+    leafTok === 'SHIELD WIRE' ||
+    leafTok === 'W SHIELD' ||
+    fullTok === 'WIRE SHIELD' ||
+    fullTok === 'SHIELD WIRE'
+  ) {
+    return { field: 'wireShield', side: null, slot: null };
+  }
+  if (
     leafTok === 'HD' ||
     leafTok === 'H D' ||
+    leafTok === 'H DWG' ||
+    leafTok === 'HDWG' ||
     fullTok === 'HD' ||
     fullTok === 'H D' ||
+    fullTok === 'H DWG' ||
+    fullTok === 'HDWG' ||
     fullTok === 'HALF STRIP'
   ) {
     return { field: 'hd', side: null, slot: null };
@@ -956,8 +1012,12 @@ function classifyPpcsColumn(leafRaw: string, topRaw: string, fullRaw: string): C
   if (
     leafTok === 'SD' ||
     leafTok === 'S D' ||
+    leafTok === 'S DWG' ||
+    leafTok === 'SDWG' ||
     fullTok === 'SD' ||
     fullTok === 'S D' ||
+    fullTok === 'S DWG' ||
+    fullTok === 'SDWG' ||
     fullTok === 'SEMI STRIP'
   ) {
     return { field: 'sd', side: null, slot: null };
@@ -1232,6 +1292,7 @@ function detectPpcsHeader(grid: unknown[][]): DetectedPpcsHeader | null {
       to: -1,
       jointNo: -1,
       twist: -1,
+      wireShield: -1,
       tubeR: -1,
       tubeF: -1,
       hd: -1,
@@ -1293,6 +1354,9 @@ function detectPpcsHeader(grid: unknown[][]): DetectedPpcsHeader | null {
           break;
         case 'twist':
           if (colMap.twist < 0) colMap.twist = c;
+          break;
+        case 'wireShield':
+          if (colMap.wireShield < 0) colMap.wireShield = c;
           break;
         case 'hd':
           if (colMap.hd < 0) colMap.hd = c;
@@ -1476,6 +1540,7 @@ function enrichPpcsRowByMap(
   const to = get(colMap.to);
   const jointNo = get(colMap.jointNo);
   const twist = get(colMap.twist);
+  const wireShield = get(colMap.wireShield);
   const tubeR = get(colMap.tubeR);
   const tubeF = get(colMap.tubeF);
   const hd = get(colMap.hd);
@@ -1529,8 +1594,25 @@ function enrichPpcsRowByMap(
   // Ensure assyNo is populated so discEngine's ppcsCount (= ppcs.filter(r => r.assyNo !== '').length) matches exact circuit count
   const assyNo = rawAssyNo || fallbackAssyNo || 'ASSY';
 
+  const hasWireShieldFlag =
+    wireShield !== '' && !/^(-|--|0|NO|NONE|N\/A|FALSE)$/i.test(wireShield);
+
+  let resolvedColour = colour;
+  const hasCorePrefix =
+    resolvedColour.length >= 2 && resolvedColour[1].toUpperCase() === 'C';
+  if (hasWireShieldFlag && !hasCorePrefix) {
+    const coreMatch =
+      wireShield.match(/(\d)\s*C\b/i) ||
+      kind.match(/(\d)\s*C\b/i) ||
+      resolvedColour.match(/(\d)\s*C\b/i);
+    const corePrefix = coreMatch ? `${coreMatch[1]}C` : '1C';
+    resolvedColour = resolvedColour ? `${corePrefix} ${resolvedColour}` : corePrefix;
+  }
+
   const isShield =
-    colour === '' || (colour.length >= 2 && colour[1].toUpperCase() === 'C');
+    hasWireShieldFlag ||
+    resolvedColour === '' ||
+    (resolvedColour.length >= 2 && resolvedColour[1].toUpperCase() === 'C');
 
   const lookupAcl = (t: string) => {
     if (!t || isShield) return '';
@@ -1564,7 +1646,7 @@ function enrichPpcsRowByMap(
     cctNo,
     kind,
     sizeRaw,
-    colour,
+    colour: resolvedColour,
     isShield,
     cl,
     from,
@@ -1624,6 +1706,7 @@ export function parsePpcsFromGrid(
         to: 8,
         jointNo: 9,
         twist: 10,
+        wireShield: -1,
         tubeR: 11,
         tubeF: 12,
         hd: 13,
@@ -1654,7 +1737,176 @@ export function parsePpcsFromGrid(
   return rows;
 }
 
+interface DetectedCotV2Header {
+  startRow: number;
+  assyNo: number;
+  partName: number;
+  tubeNo: number;
+  tubeName: number;
+  length: number;
+  qty: number;
+  unit: number;
+  proses: number;
+  supply: number;
+  type: number;
+}
+
+function detectCotV2Header(grid: unknown[][]): DetectedCotV2Header | null {
+  for (let r = 0; r < Math.min(grid.length, 40); r++) {
+    const row = grid[r];
+    if (!row || row.length < 3) continue;
+    const norm = row.map((c) => normalizeHeaderLabel(c));
+
+    let assyNo = -1;
+    let partName = -1;
+    let tubeNo = -1;
+    let tubeName = -1;
+    let length = -1;
+    let qty = -1;
+    let unit = -1;
+    let proses = -1;
+    let supply = -1;
+    let type = -1;
+
+    for (let c = 0; c < norm.length; c++) {
+      const h = norm[c];
+      if (!h) continue;
+      if (assyNo < 0 && (h === 'ASSY NO' || h === 'ASSY NUMBER' || h === 'NO ASSY')) assyNo = c;
+      else if (partName < 0 && (h === 'PART NAME' || h === 'PARTNAME')) partName = c;
+      else if (tubeNo < 0 && (h === 'TUBE NO' || h === 'TUBENO' || h === 'NO TUBE' || h === 'COT NO')) tubeNo = c;
+      else if (
+        tubeName < 0 &&
+        (h === 'TUBE NAME' ||
+          h === 'TUBENAME' ||
+          h === 'COT NAME' ||
+          h === 'NAMA TUBE' ||
+          h === 'PART NO' ||
+          h === 'PART NUMBER')
+      ) {
+        tubeName = c;
+      } else if (
+        length < 0 &&
+        (h === 'LENGTH' ||
+          h === 'LENGTH MM' ||
+          h === 'PANJANG' ||
+          h === 'TL' ||
+          h === 'L' ||
+          h === 'CUT LENGTH')
+      ) {
+        length = c;
+      } else if (qty < 0 && (h === 'QTY' || h === 'QUANTITY' || h === 'JUMLAH' || h === 'JML')) qty = c;
+      else if (unit < 0 && (h === 'UNIT' || h === 'UOM')) unit = c;
+      else if (proses < 0 && (h === 'PROSES' || h === 'PROCESS')) proses = c;
+      else if (supply < 0 && (h === 'SUPPLY' || h.startsWith('SUPPLY '))) supply = c;
+      else if (type < 0 && h === 'TYPE') type = c;
+    }
+
+    const hasTubeIdentity = tubeName >= 0 || tubeNo >= 0;
+    if (hasTubeIdentity && length >= 0) {
+      return {
+        startRow: r + 1,
+        assyNo,
+        partName,
+        tubeNo,
+        tubeName,
+        length,
+        qty,
+        unit,
+        proses,
+        supply,
+        type,
+      };
+    }
+  }
+  return null;
+}
+
 export function parseDrawingFromGrid(grid: unknown[][]): AssemblyCotItem[] {
+  const cotV2Header = detectCotV2Header(grid);
+  if (cotV2Header) {
+    const rows: AssemblyCotItem[] = [];
+    for (let r = cotV2Header.startRow; r < grid.length; r++) {
+      const row = grid[r];
+      if (!row || row.length === 0) continue;
+
+      const rowUpper = row.map((c) => normalizeHeaderLabel(c));
+      if (
+        rowUpper.some(
+          (cell) =>
+            cell.includes('HISTORY REVISI') ||
+            cell === 'CONFIRM OK' ||
+            cell === 'DISETUJUI' ||
+            cell === 'DIPERIKSA' ||
+            cell === 'DIBUAT'
+        ) ||
+        (rowUpper[0] === 'REVISI' &&
+          (rowUpper.includes('TANGGAL') || rowUpper.includes('POINT REVISI')))
+      ) {
+        break;
+      }
+
+      const cellStr = (idx: number) => {
+        if (idx < 0) return '';
+        const v = String(row[idx] ?? '').trim();
+        return isInvalidCellValue(v) ? '' : v;
+      };
+
+      const tubeName = cellStr(cotV2Header.tubeName);
+      const tubeNo = cellStr(cotV2Header.tubeNo);
+      const partName = cellStr(cotV2Header.partName);
+      const assyNo = cellStr(cotV2Header.assyNo);
+      const unit = cellStr(cotV2Header.unit);
+      const proses = cellStr(cotV2Header.proses);
+      const supply = cellStr(cotV2Header.supply);
+
+      const normTubeName = normalizeHeaderLabel(tubeName);
+      const normPartName = normalizeHeaderLabel(partName);
+      if (
+        normTubeName === 'TOTAL' ||
+        normTubeName === 'GRAND TOTAL' ||
+        normTubeName === 'SUBTOTAL' ||
+        normTubeName === 'TUBE NAME' ||
+        normPartName === 'TOTAL' ||
+        normPartName === 'GRAND TOTAL' ||
+        rowUpper[0] === 'TOTAL' ||
+        rowUpper[0] === 'NO'
+      ) {
+        continue;
+      }
+
+      const lengthMm = parseNumeric(row[cotV2Header.length]);
+      if (!tubeName && !tubeNo && !partName) continue;
+      if (lengthMm <= 0) continue;
+
+      const rawQtyStr = cellStr(cotV2Header.qty);
+      const qty =
+        cotV2Header.qty >= 0 && rawQtyStr !== '' ? parseNumeric(rawQtyStr) : 1;
+      if (qty <= 0) continue;
+
+      const rawType = cellStr(cotV2Header.type).toUpperCase();
+      const itemType: 'C' | 'T' | 'B' =
+        rawType === 'T' || rawType === 'B' ? rawType : 'C';
+
+      const diaCode = extractCotDiaCode(tubeName, partName);
+
+      rows.push({
+        type: itemType,
+        tl: lengthMm,
+        assyNo: assyNo || undefined,
+        partName: partName || undefined,
+        tubeNo: tubeNo || undefined,
+        tubeName: tubeName || undefined,
+        diaCode: diaCode || undefined,
+        qty,
+        unit: unit || undefined,
+        proses: proses || undefined,
+        supply: supply || undefined,
+      });
+    }
+    return rows;
+  }
+
+  // Fallback format legacy Assembly (kolom TYPE C/T/B + TL)
   const rows: AssemblyCotItem[] = [];
   let typeCol = 0;
   let tlCol = 1;
@@ -1738,6 +1990,10 @@ export function parsePartMasterFromGrid(grid: unknown[][]): {
     h === 'ASSY NAME' ||
     h === 'PART NAME' ||
     h === 'MODEL' ||
+    h === 'WEIGHT / MASS' ||
+    h === 'WEIGHT MASS' ||
+    h === 'WEIGHT' ||
+    h === 'MASS' ||
     h === 'DATE' ||
     h === 'TANGGAL' ||
     h === 'REV' ||
@@ -1977,10 +2233,14 @@ export interface MasterWorkbookParseResult {
   partList?: PartListItem[];
   ppcsList?: PpcsWireItem[];
   assemblyCotList?: AssemblyCotItem[];
+  markerList?: MarkerListItem[];
   terminalRatios?: TerminalRatios;
   detectedSheets: string[];
+  ignoredSheets?: string[];
   plSheetName?: string;
   ppcsSheetName?: string;
+  cotSheetName?: string;
+  markerSheetName?: string;
   detectedFormat: DetectedTemplateFormat;
   missingSections: ('partList' | 'ppcs' | 'assemblyCot')[];
 }
@@ -1990,9 +2250,22 @@ function isOldSheetName(name: string): boolean {
   return /\bold\b|pl[\s_-]*old|old[\s_-]*assy|old[\s_-]*pl|lama|before/i.test(n);
 }
 
-function isPlNewAssySheetName(name: string): boolean {
+function isMarkerListSheetName(name: string): boolean {
   const n = name.trim().toLowerCase();
   if (isOldSheetName(n)) return false;
+  return /\bmarker\b|marker[\s_-]*list/i.test(n);
+}
+
+function isCotSheetName(name: string): boolean {
+  const n = name.trim().toLowerCase();
+  if (isOldSheetName(n) || isMarkerListSheetName(n)) return false;
+  const compact = n.replace(/[\s_-]+/g, '');
+  return compact === 'cot' || /\bcot\b/i.test(n) || n.includes('corrugated');
+}
+
+function isPlNewAssySheetName(name: string): boolean {
+  const n = name.trim().toLowerCase();
+  if (isOldSheetName(n) || isMarkerListSheetName(n) || isCotSheetName(n)) return false;
   if (/pl[\s_-]*new[\s_-]*assy/i.test(n) || /^pl[\s_-]*new\b/i.test(n)) return true;
   if (n.includes('new') && (n.includes('pl') || n.includes('part list') || n.includes('partlist'))) {
     return true;
@@ -2000,34 +2273,116 @@ function isPlNewAssySheetName(name: string): boolean {
   return false;
 }
 
+/**
+ * Nama sheet utama Part List dengan prioritas setara:
+ * "PART LIST" (atau "PARTLIST") dan "PL NEW ASSY".
+ */
+function isPartListPrimarySheetName(name: string): boolean {
+  const n = name.trim().toLowerCase();
+  if (isOldSheetName(n) || isMarkerListSheetName(n) || isCotSheetName(n)) return false;
+  if (n.includes('ppcs') || n.includes('assembly')) return false;
+  const compact = n.replace(/[\s_-]+/g, '');
+  if (compact === 'partlist' || compact === 'plnewassy') return true;
+  if (/\bpart[\s_-]*list\b/i.test(n) || /\bpl[\s_-]*new[\s_-]*assy\b/i.test(n)) return true;
+  return false;
+}
+
 function isPartListSheetName(name: string): boolean {
   const n = name.trim().toLowerCase();
-  if (isOldSheetName(n)) return false;
+  if (isOldSheetName(n) || isMarkerListSheetName(n) || isCotSheetName(n)) return false;
   if (n.includes('ppcs') || n.includes('assembly')) return false;
-  if (isPlNewAssySheetName(n)) return true;
+  if (isPartListPrimarySheetName(n) || isPlNewAssySheetName(n)) return true;
   const compact = n.replace(/[\s_-]+/g, '');
-  if (compact === 'partlist' || compact === 'pl' || compact === 'bom') return true;
-  if (/^pl[\s_-]*rev/i.test(n) || /[\s_-]pl[\s_-]*rev/i.test(n) || n.includes('part list')) {
+  if (compact === 'pl' || compact === 'bom') return true;
+  if (/^pl[\s_-]*rev/i.test(n) || /[\s_-]pl[\s_-]*rev/i.test(n)) {
     return true;
   }
   return false;
+}
+
+interface ResolvedTemplateSheets {
+  pmdSheetName?: string;
+  plSheetName?: string;
+  ppcsSheetName?: string;
+  markerSheetName?: string;
+  cotSheetName?: string;
+}
+
+/**
+ * Resolves only the required template sheets by name:
+ * - PART LIST / PL NEW ASSY (equal primary alternative names, fallback PL NEW / PL_REV / PL / BOM)
+ * - PPCS (or PPCS NEW / Wire List)
+ * - MARKER LIST
+ * - COT (or legacy Assembly)
+ * - Part Master (legacy)
+ * Any extra / unrelated sheets in the workbook are NOT selected and will be strictly ignored.
+ */
+function resolveTemplateSheetsByName(sheetNames: string[]): ResolvedTemplateSheets {
+  const pmdSheetName = sheetNames.find(
+    (s) => !isOldSheetName(s) && s.toLowerCase().includes('part master')
+  );
+
+  const markerSheetName = findBestMarkerListSheet(sheetNames);
+
+  const activeForPl = sheetNames.filter(
+    (s) => !isOldSheetName(s) && !isMarkerListSheetName(s) && !isCotSheetName(s)
+  );
+  // Equal primary priority for "PART LIST" and "PL NEW ASSY"
+  const plSheetName =
+    activeForPl.find((s) => isPartListPrimarySheetName(s)) ||
+    activeForPl.find((s) => isPlNewAssySheetName(s)) ||
+    activeForPl.find((s) => isPartListSheetName(s));
+
+  const activeForPpcs = sheetNames.filter(
+    (s) => !isOldSheetName(s) && !isMarkerListSheetName(s) && !isCotSheetName(s)
+  );
+  const ppcsSheetName =
+    activeForPpcs.find(
+      (s) => s.toLowerCase().includes('ppcs') && s.toLowerCase().includes('new')
+    ) ||
+    activeForPpcs.find((s) => s.toLowerCase().includes('ppcs')) ||
+    activeForPpcs.find((s) => {
+      const low = s.toLowerCase();
+      return low.includes('wire list') || low.includes('wirelist') || low.includes('circuit');
+    });
+
+  const activeForCot = sheetNames.filter(
+    (s) => !isOldSheetName(s) && !isMarkerListSheetName(s)
+  );
+  const cotSheetName =
+    activeForCot.find((s) => isCotSheetName(s)) ||
+    activeForCot.find((s) => s.toLowerCase().includes('assembly'));
+
+  return {
+    pmdSheetName,
+    plSheetName,
+    ppcsSheetName,
+    markerSheetName,
+    cotSheetName,
+  };
 }
 
 function findBestPartListSheet(
   sheetNames: string[],
   getGrid: (name: string) => unknown[][]
 ): string | undefined {
-  const activeSheets = sheetNames.filter((s) => !isOldSheetName(s));
+  const activeSheets = sheetNames.filter(
+    (s) => !isOldSheetName(s) && !isMarkerListSheetName(s) && !isCotSheetName(s)
+  );
 
-  // Priority 1: Explicit "PL NEW ASSY" / "PL NEW"
+  // Priority 1: Equal primary names ("PART LIST" or "PL NEW ASSY")
+  const primary = activeSheets.find((s) => isPartListPrimarySheetName(s));
+  if (primary) return primary;
+
+  // Priority 2: Explicit "PL NEW"
   const plNew = activeSheets.find((s) => isPlNewAssySheetName(s));
   if (plNew) return plNew;
 
-  // Priority 2: Standard PART LIST / PL / BOM sheet name (excluding PL OLD ASSY)
+  // Priority 3: Standard PL / PL_REV / BOM sheet name (excluding PL OLD ASSY)
   const byName = activeSheets.find((s) => isPartListSheetName(s));
   if (byName) return byName;
 
-  // Priority 3: Content scan across non-old, non-ppcs, non-assembly sheets
+  // Priority 4: Content scan across non-old, non-ppcs, non-assembly, non-cot, non-marker sheets
   for (const name of activeSheets) {
     const low = name.toLowerCase();
     if (low.includes('ppcs') || low.includes('assembly')) continue;
@@ -2040,7 +2395,9 @@ function findBestPpcsSheet(
   sheetNames: string[],
   getGrid: (name: string) => unknown[][]
 ): string | undefined {
-  const activeSheets = sheetNames.filter((s) => !isOldSheetName(s));
+  const activeSheets = sheetNames.filter(
+    (s) => !isOldSheetName(s) && !isMarkerListSheetName(s) && !isCotSheetName(s)
+  );
   const pool = activeSheets.length > 0 ? activeSheets : sheetNames;
 
   // Priority 1: PPCS NEW
@@ -2069,6 +2426,168 @@ function findBestPpcsSheet(
   return undefined;
 }
 
+function findBestCotSheet(
+  sheetNames: string[],
+  getGrid: (name: string) => unknown[][]
+): string | undefined {
+  const activeSheets = sheetNames.filter(
+    (s) => !isOldSheetName(s) && !isMarkerListSheetName(s)
+  );
+
+  // Priority 1: Explicit "COT" sheet (format template baru)
+  const cotByName = activeSheets.find((s) => isCotSheetName(s));
+  if (cotByName) return cotByName;
+
+  // Priority 2: Legacy "Assembly" sheet
+  const asmByName = activeSheets.find((s) => s.toLowerCase().includes('assembly'));
+  if (asmByName) return asmByName;
+
+  // Priority 3: Content scan for COT V2 table header (TUBE NAME + LENGTH)
+  for (const name of activeSheets) {
+    const low = name.toLowerCase();
+    if (low.includes('ppcs') || isPartListSheetName(name)) continue;
+    if (detectCotV2Header(getGrid(name))) return name;
+  }
+  return undefined;
+}
+
+function findBestMarkerListSheet(sheetNames: string[]): string | undefined {
+  return sheetNames.find((s) => isMarkerListSheetName(s));
+}
+
+export function parseMarkerListFromGrid(grid: unknown[][]): {
+  items: MarkerListItem[];
+  totalQty: number;
+} {
+  if (!grid || grid.length === 0) return { items: [], totalQty: 0 };
+  let headerRow = -1;
+  let noCol = -1;
+  let assyCol = -1;
+  let partNoCol = -1;
+  let partNameCol = -1;
+  let qtyCol = -1;
+  let unitCol = -1;
+  let prosesCol = -1;
+  let supplyCol = -1;
+
+  for (let r = 0; r < Math.min(grid.length, 30); r++) {
+    const row = grid[r] || [];
+    const norm = row.map((c) => normalizeHeaderLabel(c));
+    const nonEmptyCount = norm.filter(Boolean).length;
+    if (nonEmptyCount < 2) continue;
+
+    let foundNo = -1;
+    let foundAssy = -1;
+    let foundPartNo = -1;
+    let foundPartName = -1;
+    let foundQty = -1;
+    let foundUnit = -1;
+    let foundProses = -1;
+    let foundSupply = -1;
+    let headerSignals = 0;
+
+    for (let c = 0; c < norm.length; c++) {
+      const h = norm[c];
+      if (!h) continue;
+      if (foundQty < 0 && isQtyHeader(h)) {
+        foundQty = c;
+        headerSignals++;
+      } else if (
+        foundPartNo < 0 &&
+        (isPartNoHeader(h) || h === 'MARKER' || h === 'MARKER NO' || h === 'CODE' || h === 'LABEL' || h.includes('MARKER CODE'))
+      ) {
+        foundPartNo = c;
+        headerSignals++;
+      } else if (
+        foundPartName < 0 &&
+        (isPartNameHeader(h) || h.includes('MARKER NAME') || h === 'KETERANGAN' || h === 'REMARK')
+      ) {
+        foundPartName = c;
+        headerSignals++;
+      } else if (foundNo < 0 && h === 'NO') {
+        foundNo = c;
+        headerSignals++;
+      } else if (foundAssy < 0 && (h === 'ASSY NO' || h === 'ASSY NUMBER')) {
+        foundAssy = c;
+        headerSignals++;
+      } else if (foundUnit < 0 && (h === 'UNIT' || h === 'UOM')) {
+        foundUnit = c;
+        headerSignals++;
+      } else if (foundProses < 0 && (h === 'PROSES' || h === 'PROCESS')) {
+        foundProses = c;
+        headerSignals++;
+      } else if (foundSupply < 0 && (h === 'SUPPLY' || h.startsWith('SUPPLY '))) {
+        foundSupply = c;
+        headerSignals++;
+      }
+    }
+    if ((foundQty >= 0 || foundPartNo >= 0 || foundPartName >= 0) && headerSignals >= 2) {
+      headerRow = r;
+      noCol = foundNo;
+      assyCol = foundAssy;
+      partNoCol = foundPartNo;
+      partNameCol = foundPartName;
+      qtyCol = foundQty;
+      unitCol = foundUnit;
+      prosesCol = foundProses;
+      supplyCol = foundSupply;
+      break;
+    }
+  }
+
+  if (headerRow < 0) return { items: [], totalQty: 0 };
+
+  const items: MarkerListItem[] = [];
+  let total = 0;
+  for (let r = headerRow + 1; r < grid.length; r++) {
+    const row = grid[r] || [];
+    if (row.length === 0) continue;
+    const rowUpper = row.map((c) => normalizeHeaderLabel(c));
+    if (
+      rowUpper.some(
+        (cell) =>
+          cell.includes('HISTORY REVISI') ||
+          cell === 'CONFIRM OK' ||
+          cell === 'DISETUJUI' ||
+          cell === 'DIPERIKSA' ||
+          cell === 'DIBUAT'
+      ) ||
+      rowUpper[0] === 'TOTAL' ||
+      rowUpper[0] === 'GRAND TOTAL'
+    ) {
+      break;
+    }
+
+    const rawNo = noCol >= 0 ? String(row[noCol] ?? '').trim() : '';
+    const rawAssy = assyCol >= 0 ? String(row[assyCol] ?? '').trim() : '';
+    const rawPartNo = partNoCol >= 0 ? String(row[partNoCol] ?? '').trim() : '';
+    const rawPartName = partNameCol >= 0 ? String(row[partNameCol] ?? '').trim() : '';
+    const rawUnit = unitCol >= 0 ? String(row[unitCol] ?? '').trim() : '';
+    const rawProses = prosesCol >= 0 ? String(row[prosesCol] ?? '').trim() : '';
+    const rawSupply = supplyCol >= 0 ? String(row[supplyCol] ?? '').trim() : '';
+
+    const partNo = isInvalidCellValue(rawPartNo) ? '' : rawPartNo;
+    const partName = isInvalidCellValue(rawPartName) ? '' : rawPartName;
+    const q = qtyCol >= 0 ? parseNumeric(row[qtyCol]) : partNo || partName ? 1 : 0;
+
+    if (!partNo && !partName && q <= 0) continue;
+    const effectiveQty = q > 0 ? q : 0;
+    if (effectiveQty > 0) total += effectiveQty;
+
+    items.push({
+      ...(rawNo && !isInvalidCellValue(rawNo) ? { no: rawNo } : {}),
+      ...(rawAssy && !isInvalidCellValue(rawAssy) ? { assyNo: rawAssy } : {}),
+      partNo: partNo || partName || `MARKER-${items.length + 1}`,
+      partName: partName || 'Marker',
+      qty: effectiveQty,
+      ...(rawUnit && !isInvalidCellValue(rawUnit) ? { unit: rawUnit } : {}),
+      ...(rawProses && !isInvalidCellValue(rawProses) ? { proses: rawProses } : {}),
+      ...(rawSupply && !isInvalidCellValue(rawSupply) ? { supply: rawSupply } : {}),
+    });
+  }
+  return { items, totalQty: Math.round(total) };
+}
+
 export async function parseMasterWorkbook(
   file: File,
   aclList: AutoCutItem[],
@@ -2077,6 +2596,9 @@ export async function parseMasterWorkbook(
   const isCsv = file.name.toLowerCase().endsWith('.csv');
   const sheetsMap = new Map<string, string[][]>();
   let sheetNames: string[] = [];
+  let namedMatch: ResolvedTemplateSheets | null = null;
+  let strictNamedMode = false;
+  let ignoredSheets: string[] = [];
 
   if (isCsv) {
     const text = await file.text();
@@ -2094,10 +2616,41 @@ export async function parseMasterWorkbook(
       cellNF: false,
     });
     sheetNames = wb.SheetNames;
-    for (const name of sheetNames) {
-      // Skip loading PL OLD ASSY completely to save memory and prevent wrong data extraction
-      if (isOldSheetName(name) && sheetNames.length > 1) continue;
-      sheetsMap.set(name, sheetToSafeGrid(wb.Sheets[name]));
+
+    if (sheetNames.length > 1) {
+      const resolved = resolveTemplateSheetsByName(sheetNames);
+      const selectedSet = new Set<string>(
+        [
+          resolved.pmdSheetName,
+          resolved.plSheetName,
+          resolved.ppcsSheetName,
+          resolved.markerSheetName,
+          resolved.cotSheetName,
+        ].filter((s): s is string => Boolean(s))
+      );
+
+      if (selectedSet.size > 0) {
+        // Strict template mode: ONLY parse required sheets and ignore all extra sheets completely
+        namedMatch = resolved;
+        strictNamedMode = true;
+        ignoredSheets = sheetNames.filter((s) => !selectedSet.has(s));
+        for (const name of selectedSet) {
+          sheetsMap.set(name, sheetToSafeGrid(wb.Sheets[name]));
+          await yieldToMain();
+        }
+      } else {
+        // Fallback for workbooks with generic sheet names (e.g. Sheet1, Sheet2)
+        for (const name of sheetNames) {
+          if (isOldSheetName(name)) {
+            ignoredSheets.push(name);
+            continue;
+          }
+          sheetsMap.set(name, sheetToSafeGrid(wb.Sheets[name]));
+          await yieldToMain();
+        }
+      }
+    } else if (sheetNames.length === 1) {
+      sheetsMap.set(sheetNames[0], sheetToSafeGrid(wb.Sheets[sheetNames[0]]));
       await yieldToMain();
     }
   }
@@ -2105,15 +2658,17 @@ export async function parseMasterWorkbook(
   const getGrid = (name: string) => sheetsMap.get(name) || [];
 
   const result: MasterWorkbookParseResult = {
-    detectedSheets: sheetNames,
+    detectedSheets: strictNamedMode ? Array.from(sheetsMap.keys()) : sheetNames,
+    ...(ignoredSheets.length > 0 ? { ignoredSheets } : {}),
     detectedFormat: 'partial',
     missingSections: [],
   };
 
   // 1. Part Master (dedicated non-old sheet OR single-sheet CSV/XLSX template)
-  const pmdSheetName =
-    sheetNames.find((s) => !isOldSheetName(s) && s.toLowerCase().includes('part master')) ||
-    (sheetNames.length === 1 ? sheetNames[0] : undefined);
+  const pmdSheetName = strictNamedMode
+    ? namedMatch?.pmdSheetName
+    : sheetNames.find((s) => !isOldSheetName(s) && s.toLowerCase().includes('part master')) ||
+      (sheetNames.length === 1 ? sheetNames[0] : undefined);
   if (pmdSheetName) {
     const pmdGrid = getGrid(pmdSheetName);
     const { params, terminalRatios } = parsePartMasterFromGrid(pmdGrid);
@@ -2121,10 +2676,12 @@ export async function parseMasterWorkbook(
     if (terminalRatios) result.terminalRatios = terminalRatios;
   }
 
-  // 2. PART LIST (strictly prioritizes PL NEW ASSY and ignores PL OLD ASSY)
+  // 2. PART LIST (supports template baru PART LIST & PL NEW ASSY setara, abaikan sheet tambahan)
   let parsedPl: PartListItem[] = [];
   let isPlRevDetected = false;
-  const plSheetName = findBestPartListSheet(sheetNames, getGrid);
+  const plSheetName = strictNamedMode
+    ? namedMatch?.plSheetName
+    : findBestPartListSheet(sheetNames, getGrid);
 
   if (plSheetName) {
     result.plSheetName = plSheetName;
@@ -2134,12 +2691,12 @@ export async function parseMasterWorkbook(
       isPlRevDetected = true;
     }
 
-    // Harvest Part Master metadata (CUSTOMER, ASS'Y NO, JML CCT) from PL NEW ASSY if missing
+    // Harvest metadata utama dari header PART LIST / PL NEW ASSY (ASSY NO C4, CUSTOMER C5, QTY CCT C8)
     const plMeta = parsePartMasterFromGrid(plGrid);
     if (plMeta.params) {
       result.params = {
-        ...plMeta.params,
         ...(result.params ?? {}),
+        ...plMeta.params,
       };
     }
 
@@ -2149,8 +2706,10 @@ export async function parseMasterWorkbook(
 
   await yieldToMain();
 
-  // 3. PPCS (dynamic multi-row header & strict circuit count matching JML CCT)
-  const ppcsSheetName = findBestPpcsSheet(sheetNames, getGrid);
+  // 3. PPCS (dynamic multi-row header, mendukung C-LENGTH, J-Dwg, S-Dwg, Wire Shield, H-Dwg, dll.)
+  const ppcsSheetName = strictNamedMode
+    ? namedMatch?.ppcsSheetName
+    : findBestPpcsSheet(sheetNames, getGrid);
   if (ppcsSheetName) {
     result.ppcsSheetName = ppcsSheetName;
     const ppcsGrid = getGrid(ppcsSheetName);
@@ -2176,30 +2735,68 @@ export async function parseMasterWorkbook(
 
   await yieldToMain();
 
-  // 4. Assembly COT
-  const asmSheetName = sheetNames.find(
-    (s) => !isOldSheetName(s) && s.toLowerCase().includes('assembly')
-  );
-  if (asmSheetName) {
-    const asmGrid = getGrid(asmSheetName);
-    const parsedCot = parseDrawingFromGrid(asmGrid);
+  // 4. COT / Assembly COT (prioritas sheet COT baru, fallback legacy Assembly)
+  const cotSheetName = strictNamedMode
+    ? namedMatch?.cotSheetName
+    : findBestCotSheet(sheetNames, getGrid);
+  if (cotSheetName) {
+    result.cotSheetName = cotSheetName;
+    const cotGrid = getGrid(cotSheetName);
+    const parsedCot = parseDrawingFromGrid(cotGrid);
     if (parsedCot.length > 0) result.assemblyCotList = parsedCot;
-    const nsVal =
-      (asmGrid[17] && parseFloat(String(asmGrid[17][7] || ''))) ||
-      (asmGrid[16] && parseFloat(String(asmGrid[16][7] || ''))) ||
-      0;
-    if (nsVal > 0) {
-      result.assemblyComponents = { spotTapeQty: nsVal };
+
+    if (cotSheetName.toLowerCase().includes('assembly')) {
+      const nsVal =
+        (cotGrid[17] && parseFloat(String(cotGrid[17][7] || ''))) ||
+        (cotGrid[16] && parseFloat(String(cotGrid[16][7] || ''))) ||
+        0;
+      if (nsVal > 0) {
+        result.assemblyComponents = {
+          ...(result.assemblyComponents ?? {}),
+          spotTapeQty: nsVal,
+        };
+      }
     }
   } else if (sheetNames.length === 1 && !isPlRevDetected) {
     const singleGrid = getGrid(sheetNames[0]);
-    const hasTypeHeader = singleGrid.slice(0, 60).some((row) => {
-      const u = row.map((c) => normalizeHeaderLabel(c));
-      return u.includes('TYPE') && (u.includes('TL') || u.length <= 4);
-    });
-    if (hasTypeHeader) {
+    const hasCotOrTypeHeader =
+      Boolean(detectCotV2Header(singleGrid)) ||
+      singleGrid.slice(0, 60).some((row) => {
+        const u = row.map((c) => normalizeHeaderLabel(c));
+        return u.includes('TYPE') && (u.includes('TL') || u.length <= 4);
+      });
+    if (hasCotOrTypeHeader) {
       const parsedCot = parseDrawingFromGrid(singleGrid);
       if (parsedCot.length > 0) result.assemblyCotList = parsedCot;
+    }
+  }
+
+  // 5. MARKER LIST (opsional pada template 4-sheet baru)
+  const markerSheetName = strictNamedMode
+    ? namedMatch?.markerSheetName
+    : findBestMarkerListSheet(sheetNames);
+  if (markerSheetName) {
+    result.markerSheetName = markerSheetName;
+    const parsedMarkers = parseMarkerListFromGrid(getGrid(markerSheetName));
+    if (parsedMarkers.items.length > 0) {
+      result.markerList = parsedMarkers.items;
+    }
+    if (parsedMarkers.totalQty > 0) {
+      result.assemblyComponents = {
+        ...(result.assemblyComponents ?? {}),
+        markerQty: parsedMarkers.totalQty,
+      };
+    }
+  }
+
+  // 6. Auto-validasi Spot Tape dari PART LIST (total meter Tape warna non-Black / 0.2, dibulatkan ke atas)
+  if (parsedPl.length > 0) {
+    const spotSummary = calculateSpotTapeFromPartList(parsedPl);
+    if (spotSummary.spotCount > 0) {
+      result.assemblyComponents = {
+        ...(result.assemblyComponents ?? {}),
+        spotTapeQty: spotSummary.spotCount,
+      };
     }
   }
 
@@ -2226,7 +2823,7 @@ export async function parseMasterWorkbook(
 
 export async function parseSingleSheetGrid(
   file: File,
-  targetType: 'pl' | 'ppcs' | 'dwg'
+  targetType: 'pl' | 'ppcs' | 'dwg' | 'marker'
 ): Promise<unknown[][]> {
   if (file.name.toLowerCase().endsWith('.csv')) {
     const text = await file.text();
@@ -2253,15 +2850,30 @@ export async function parseSingleSheetGrid(
     return g;
   };
 
+  // Prefer exact template sheet name match first (ignores extra sheets completely)
+  const resolved = resolveTemplateSheetsByName(sheetNames);
+  if (targetType === 'pl' && resolved.plSheetName) {
+    return getGrid(resolved.plSheetName);
+  }
+  if (targetType === 'ppcs' && resolved.ppcsSheetName) {
+    return getGrid(resolved.ppcsSheetName);
+  }
+  if (targetType === 'dwg' && resolved.cotSheetName) {
+    return getGrid(resolved.cotSheetName);
+  }
+  if (targetType === 'marker' && resolved.markerSheetName) {
+    return getGrid(resolved.markerSheetName);
+  }
+
   let targetSheet = sheetNames.find((s) => !isOldSheetName(s)) || sheetNames[0];
   if (targetType === 'pl') {
     targetSheet = findBestPartListSheet(sheetNames, getGrid) || targetSheet;
   } else if (targetType === 'ppcs') {
     targetSheet = findBestPpcsSheet(sheetNames, getGrid) || targetSheet;
   } else if (targetType === 'dwg') {
-    targetSheet =
-      sheetNames.find((s) => !isOldSheetName(s) && s.toLowerCase().includes('assembly')) ||
-      targetSheet;
+    targetSheet = findBestCotSheet(sheetNames, getGrid) || targetSheet;
+  } else if (targetType === 'marker') {
+    targetSheet = findBestMarkerListSheet(sheetNames) || targetSheet;
   }
   return getGrid(targetSheet);
 }
@@ -2284,7 +2896,8 @@ export function reEnrichPayloadWithLists<
       row.qty,
       row.routingId,
       aclLookup,
-      flMap
+      flMap,
+      row.unit
     )
   );
 
@@ -2362,87 +2975,129 @@ export function downloadUmhTemplateCsv(): void {
 }
 
 /**
- * Download styled XLSX template with Part Master (matching template_umh CSV),
- * PART LIST, PPCS, and Assembly COT sheets.
+ * Download styled XLSX template matching struktur 4-sheet baru:
+ * PART LIST (header metadata di kolom C + tabel baris 12),
+ * PPCS (tabel baris 9), MARKER LIST, dan COT (tabel baris 7).
  */
 export function downloadUmhTemplateXlsx(): void {
   const wb = XLSX.utils.book_new();
 
-  // Sheet 1: Part Master
-  const wsMaster = XLSX.utils.aoa_to_sheet([
-    ['PART MASTER DATA & KONFIGURASI RASIO AUTO-CUT TERMINAL'],
-    [],
-    [],
-    ['Assy No.', 'Jml CCT', 'Allowance PFD Tolerance (%)', 'Customer', 'Metode Allowance'],
-    ['', '', '15.0%', '', 'by_process'],
-    [],
-    ['KONFIGURASI RASIO AUTO-CUT TERMINAL (OPSIONAL)'],
-    ['Terminal', 'Rasio (%)'],
-    ['', '100%'],
-  ]);
-  wsMaster['!cols'] = [
-    { wch: 24 },
-    { wch: 14 },
-    { wch: 28 },
-    { wch: 18 },
-    { wch: 18 },
-  ];
-  XLSX.utils.book_append_sheet(wb, wsMaster, 'Part Master');
-
-  // Sheet 2: PART LIST
+  // Sheet 1: PART LIST (Header metadata C4/C5/C8, tabel mulai baris 12)
   const wsPartList = XLSX.utils.aoa_to_sheet([
-    ['No', 'Customer', 'Assy Number', 'Part Number', 'Part Name', 'Qty', 'Routing ID'],
+    ['', '', '', '', '', 'FRM-EXP-ENG-001-00', '', ''],
+    ['', '', 'Part', 'List', '', '', '', ''],
+    [],
+    ['ASSY NO', ':', '', '', '', '', '', ''],
+    ['CUSTOMER', ':', '', '', '', '', '', ''],
+    ['ASSY NAME', ':', 'WIRE HARNESS', '', '', '', '', ''],
+    ['MODEL', ':', '', '', '', '', '', ''],
+    ['QTY CCT', ':', '', '', '', '', '', ''],
+    ['WEIGHT / MASS', ':', '', '', '', '', '', ''],
+    ['DATE', ':', '', '', '', '', '', ''],
+    [],
+    ['NO', 'Part No', 'Part Name', 'Quantity', 'Unit', 'Supply', 'Maker', 'Revisi'],
   ]);
   wsPartList['!cols'] = [
-    { wch: 6 },
     { wch: 16 },
-    { wch: 18 },
-    { wch: 20 },
-    { wch: 18 },
+    { wch: 24 },
+    { wch: 22 },
+    { wch: 12 },
     { wch: 10 },
+    { wch: 10 },
+    { wch: 16 },
     { wch: 12 },
   ];
   XLSX.utils.book_append_sheet(wb, wsPartList, 'PART LIST');
 
-  // Sheet 3: PPCS
+  // Sheet 2: PPCS (Header tabel mulai baris 9, data mulai baris 10)
   const wsPpcs = XLSX.utils.aoa_to_sheet([
+    ['', '', 'PPCS'],
+    [],
+    [],
+    [],
+    [],
+    [],
+    [],
+    [],
     [
-      'No',
-      'Assy No',
-      'CCT No',
-      'Kind',
-      'Size',
-      'Colour',
-      'C/L',
-      'From',
-      'To',
-      'Joint No',
-      'Twist',
-      'Tube R',
-      'Tube F',
-      'HD',
-      'SD',
-      'Terminal R',
-      'Marker R',
-      'DC R',
-      'Acc R1',
-      'Acc R2',
-      'Terminal F',
-      'Marker F',
-      'Acc F1',
-      'Acc F2',
-      'DC F',
+      'NO',
+      'ASSY NO',
+      'FROM',
+      'TO',
+      'CCT NO',
+      'KIND',
+      'SIZE',
+      'COLOR',
+      'WIRE',
+      'C-LENGTH',
+      'BASE',
+      'J-Dwg',
+      'S-Dwg',
+      'Wire Shield',
+      'H-Dwg',
+      'TWIST',
+      'TERM-F',
+      'NOTE-F',
+      'DC-F',
+      'ACC-F1',
+      'ACC-F2',
+      'TUBE-F1',
+      'MARK-F',
+      'TERM-R',
+      'NOTE-R',
+      'DC-R',
+      'ACC-R1',
+      'ACC-R2',
+      'TUBE-R1',
+      'MARK-R',
     ],
   ]);
-  wsPpcs['!cols'] = Array(25).fill({ wch: 13 });
+  wsPpcs['!cols'] = Array(30).fill({ wch: 13 });
   XLSX.utils.book_append_sheet(wb, wsPpcs, 'PPCS');
 
-  // Sheet 4: Assembly
-  const wsAssembly = XLSX.utils.aoa_to_sheet([
-    ['Type', 'TL', 'Keterangan (C = COT, T = Taping, B = Bare)'],
+  // Sheet 3: MARKER LIST
+  const wsMarker = XLSX.utils.aoa_to_sheet([
+    ['', '', 'MARKER LIST'],
+    [],
+    [],
+    [],
+    [],
+    [],
+    ['NO', 'ASSY NO', 'MARKER NO', 'MARKER NAME', 'QTY', 'UNIT'],
   ]);
-  wsAssembly['!cols'] = [{ wch: 10 }, { wch: 14 }, { wch: 36 }];
-  XLSX.utils.book_append_sheet(wb, wsAssembly, 'Assembly');
+  wsMarker['!cols'] = [
+    { wch: 8 },
+    { wch: 20 },
+    { wch: 18 },
+    { wch: 24 },
+    { wch: 10 },
+    { wch: 10 },
+  ];
+  XLSX.utils.book_append_sheet(wb, wsMarker, 'MARKER LIST');
+
+  // Sheet 4: COT (Header tabel mulai baris 7, data mulai baris 8)
+  const wsCot = XLSX.utils.aoa_to_sheet([
+    ['', '', 'COT'],
+    [],
+    [],
+    [],
+    [],
+    [],
+    ['NO', 'ASSY NO', 'PART NAME', 'TUBE NO', 'TUBE NAME', 'LENGTH', 'QTY', 'UNIT', 'PROSES', 'SUPPLY'],
+  ]);
+  wsCot['!cols'] = [
+    { wch: 8 },
+    { wch: 20 },
+    { wch: 18 },
+    { wch: 14 },
+    { wch: 22 },
+    { wch: 12 },
+    { wch: 10 },
+    { wch: 10 },
+    { wch: 14 },
+    { wch: 12 },
+  ];
+  XLSX.utils.book_append_sheet(wb, wsCot, 'COT');
 
   XLSX.writeFile(wb, 'Template_UMH_Wire_Harness.xlsx');
 }

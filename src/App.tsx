@@ -1487,6 +1487,7 @@ export default function App() {
           initialPayload={editingPayload}
           autoCutList={autoCutList}
           feederList={feederList}
+          cotMatrix={stdDb.cotMatrix}
           onClose={() => {
             setWizardOpen(false);
             setEditingPayload(null);

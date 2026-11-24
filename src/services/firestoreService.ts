@@ -14,6 +14,9 @@ import {
   where,
   writeBatch,
 } from 'firebase/firestore';
+import { upgradeLegacyCotMatrix, upgradeSettingWireMatrix } from '../data/cotMasterV2';
+import { upgradeBuiltinProcessDiscs } from '../data/defaultProcessDiscs';
+import { upgradeAssemblyStdParams } from '../data/defaultStdDb';
 import { getAllowSecForMode } from '../engine/umhCalculator';
 import { OperationType, db, handleFirestoreError } from '../firebase';
 import {
@@ -435,14 +438,39 @@ export async function initializeCloudWorkspace(
         createdAt: serverTimestamp(),
         updatedAt: serverTimestamp(),
       };
+      const bodyWithDiscs = {
+        ...baseMaster,
+        processDiscs: cleanForFirestore((localState.stdDb.processDiscs ?? []).slice(0, 100)),
+      };
+      const bodyWithCot = {
+        ...bodyWithDiscs,
+        cotMatrixMap: matrixToMap(localState.stdDb.cotMatrix),
+      };
+      const fullMaster = {
+        ...bodyWithCot,
+        settingWireMatrixMap: matrixToMap(localState.stdDb.settingWireMatrix),
+      };
       try {
-        await setDoc(masterRef, {
-          ...baseMaster,
-          processDiscs: cleanForFirestore((localState.stdDb.processDiscs ?? []).slice(0, 100)),
-        });
+        await setDoc(masterRef, fullMaster);
       } catch (innerErr) {
         if (isPermissionDeniedError(innerErr)) {
-          await setDoc(masterRef, baseMaster);
+          try {
+            await setDoc(masterRef, bodyWithCot);
+          } catch (innerErr2) {
+            if (isPermissionDeniedError(innerErr2)) {
+              try {
+                await setDoc(masterRef, bodyWithDiscs);
+              } catch (innerErr3) {
+                if (isPermissionDeniedError(innerErr3)) {
+                  await setDoc(masterRef, baseMaster);
+                } else {
+                  throw innerErr3;
+                }
+              }
+            } else {
+              throw innerErr2;
+            }
+          }
         } else {
           throw innerErr;
         }
@@ -643,15 +671,21 @@ export function subscribeMasterConfig(
       const d = snap.data();
       onData({
         stdDb: {
-          params: Array.isArray(d.params) ? d.params : structuredClone(fallbackStd.params),
+          params: Array.isArray(d.params)
+            ? upgradeAssemblyStdParams(d.params)
+            : structuredClone(fallbackStd.params),
           acMatrix: mapToMatrix(d.acMatrixMap, fallbackStd.acMatrix),
           saMatrix: mapToMatrix(d.saMatrixMap, fallbackStd.saMatrix),
           mcMatrix: mapToMatrix(d.mcMatrixMap, fallbackStd.mcMatrix),
+          cotMatrix: upgradeLegacyCotMatrix(mapToMatrix(d.cotMatrixMap, fallbackStd.cotMatrix)),
+          settingWireMatrix: upgradeSettingWireMatrix(
+            mapToMatrix(d.settingWireMatrixMap, fallbackStd.settingWireMatrix)
+          ),
           processDiscs:
             Array.isArray(d.processDiscs) && d.processDiscs.length > 0
-              ? (d.processDiscs as ProcessLogicDisc[])
+              ? upgradeBuiltinProcessDiscs(d.processDiscs as ProcessLogicDisc[])
               : fallbackStd.processDiscs
-              ? structuredClone(fallbackStd.processDiscs)
+              ? upgradeBuiltinProcessDiscs(structuredClone(fallbackStd.processDiscs))
               : undefined,
         },
         autoCutList: Array.isArray(d.autoCutList) ? d.autoCutList : [],
@@ -691,16 +725,40 @@ export function saveMasterConfigToCloud(
     ...baseBody,
     processDiscs: cleanForFirestore((stdDb.processDiscs ?? []).slice(0, 100)),
   };
+  const bodyWithCot = {
+    ...bodyWithDiscs,
+    cotMatrixMap: matrixToMap(stdDb.cotMatrix),
+  };
+  const bodyFull = {
+    ...bodyWithCot,
+    settingWireMatrixMap: matrixToMap(stdDb.settingWireMatrix),
+  };
 
   const runWrite = async () => {
     try {
       const snap = await getDoc(ref);
       if (snap.exists()) {
         try {
-          await updateDoc(ref, bodyWithDiscs);
+          await updateDoc(ref, bodyFull);
         } catch (innerErr) {
           if (isPermissionDeniedError(innerErr)) {
-            await updateDoc(ref, baseBody);
+            try {
+              await updateDoc(ref, bodyWithCot);
+            } catch (innerErr2) {
+              if (isPermissionDeniedError(innerErr2)) {
+                try {
+                  await updateDoc(ref, bodyWithDiscs);
+                } catch (innerErr3) {
+                  if (isPermissionDeniedError(innerErr3)) {
+                    await updateDoc(ref, baseBody);
+                  } else {
+                    throw innerErr3;
+                  }
+                }
+              } else {
+                throw innerErr2;
+              }
+            }
           } else {
             throw innerErr;
           }
@@ -709,16 +767,40 @@ export function saveMasterConfigToCloud(
         try {
           await setDoc(ref, {
             ownerId: uid,
-            ...bodyWithDiscs,
+            ...bodyFull,
             createdAt: serverTimestamp(),
           });
         } catch (innerErr) {
           if (isPermissionDeniedError(innerErr)) {
-            await setDoc(ref, {
-              ownerId: uid,
-              ...baseBody,
-              createdAt: serverTimestamp(),
-            });
+            try {
+              await setDoc(ref, {
+                ownerId: uid,
+                ...bodyWithCot,
+                createdAt: serverTimestamp(),
+              });
+            } catch (innerErr2) {
+              if (isPermissionDeniedError(innerErr2)) {
+                try {
+                  await setDoc(ref, {
+                    ownerId: uid,
+                    ...bodyWithDiscs,
+                    createdAt: serverTimestamp(),
+                  });
+                } catch (innerErr3) {
+                  if (isPermissionDeniedError(innerErr3)) {
+                    await setDoc(ref, {
+                      ownerId: uid,
+                      ...baseBody,
+                      createdAt: serverTimestamp(),
+                    });
+                  } else {
+                    throw innerErr3;
+                  }
+                }
+              } else {
+                throw innerErr2;
+              }
+            }
           } else {
             throw innerErr;
           }

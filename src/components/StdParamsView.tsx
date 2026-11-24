@@ -41,13 +41,7 @@ import {
   serializeDiscToJsonFile,
   validateProcessDisc,
 } from '../utils/discEngine';
-import {
-  STD_AC_ROW_LABELS,
-  STD_COL_LABELS_4,
-  STD_COL_LABELS_7,
-  STD_MC_ROW_LABELS,
-  STD_SA_ROW_LABELS,
-} from '../utils/masterDiffEngine';
+import { MATRIX_CONFIGS, MatrixKey } from '../utils/masterDiffEngine';
 import {
   exportStdParamsTemplateXlsx,
   parseStdParamsExcelFile,
@@ -84,7 +78,7 @@ export function StdParamsView({
   const [viewMode, setViewMode] = useState<'substeps' | 'matrices' | 'discs'>('substeps');
   const [selectedSheet, setSelectedSheet] = useState<string>('ALL');
   const [searchParam, setSearchParam] = useState<string>('');
-  const [selectedMatrix, setSelectedMatrix] = useState<'acMatrix' | 'saMatrix' | 'mcMatrix'>('acMatrix');
+  const [selectedMatrix, setSelectedMatrix] = useState<MatrixKey>('acMatrix');
   const [confirmResetDiscs, setConfirmResetDiscs] = useState(false);
   const [toast, setToast] = useState<string | null>(null);
   const [discError, setDiscError] = useState<string | null>(null);
@@ -414,27 +408,28 @@ export function StdParamsView({
     });
   };
 
-  const matrixMeta =
-    selectedMatrix === 'acMatrix'
-      ? {
-          title: 'Matriks 2D Autocutting (Detik/CCT: LOT × Panjang Kabel)',
-          rowLabels: STD_AC_ROW_LABELS,
-          colLabels: STD_COL_LABELS_7,
-          data: draft.acMatrix,
-        }
-      : selectedMatrix === 'saMatrix'
-      ? {
-          title: 'Matriks 2D Semi-autocutting (Detik/CCT: LOT × Panjang Kabel)',
-          rowLabels: STD_SA_ROW_LABELS,
-          colLabels: STD_COL_LABELS_7,
-          data: draft.saMatrix,
-        }
-      : {
-          title: 'Matriks 2D Manual-（Air）cutting (Detik/CCT: LOT × Panjang Kabel)',
-          rowLabels: STD_MC_ROW_LABELS,
-          colLabels: STD_COL_LABELS_4,
-          data: draft.mcMatrix,
-        };
+  const activeMatrixConfig =
+    MATRIX_CONFIGS.find((c) => c.key === selectedMatrix) ?? MATRIX_CONFIGS[0];
+  const matrixMeta = {
+    ...activeMatrixConfig,
+    data: draft[activeMatrixConfig.key] ?? [],
+  };
+
+  const formatMatrixCell = (val: number, key: MatrixKey, colIdx: number): string => {
+    if (!Number.isFinite(val)) return '0';
+    if (key === 'cotMatrix') {
+      const minDecimals = colIdx < 4 ? 4 : 2;
+      const str = String(val);
+      const fracLen = str.includes('.') ? str.split('.')[1].length : 0;
+      return val.toFixed(Math.max(minDecimals, Math.min(fracLen, 6)));
+    }
+    if (key === 'settingWireMatrix') {
+      const str = String(val);
+      const fracLen = str.includes('.') ? str.split('.')[1].length : 0;
+      return val.toFixed(Math.max(2, Math.min(fracLen, 4)));
+    }
+    return String(val);
+  };
 
   return (
     <div className="space-y-5">
@@ -500,7 +495,7 @@ export function StdParamsView({
                 {
                   id: 'download_std_template',
                   label: 'Unduh Template .xlsx',
-                  description: '4 sheet: Sub-Step + 3 Matriks 2D saat ini',
+                  description: '5 sheet: Sub-Step + 4 Matriks 2D saat ini',
                   icon: FileSpreadsheet,
                   iconClassName: 'text-[#047857]',
                   onClick: () => exportStdParamsTemplateXlsx(draft),
@@ -544,7 +539,7 @@ export function StdParamsView({
             >
               <Grid3X3 className="w-3.5 h-3.5" />
               <span>
-                Matriks 2D <span className="font-mono-num opacity-70">(3)</span>
+                Matriks 2D <span className="font-mono-num opacity-70">({MATRIX_CONFIGS.length})</span>
               </span>
             </button>
             <button
@@ -597,14 +592,8 @@ export function StdParamsView({
 
           {/* Contextual Controls for Matrices Tab */}
           {viewMode === 'matrices' && (
-            <div className="inline-flex items-center p-1 rounded-xl bg-slate-100 border border-slate-200 self-start lg:self-auto">
-              {(
-                [
-                  { key: 'acMatrix', label: 'Autocutting' },
-                  { key: 'saMatrix', label: 'Semi-Auto' },
-                  { key: 'mcMatrix', label: 'Manual-(Air)' },
-                ] as const
-              ).map((m) => (
+            <div className="inline-flex items-center p-1 rounded-xl bg-slate-100 border border-slate-200 self-start lg:self-auto overflow-x-auto max-w-full">
+              {MATRIX_CONFIGS.map((m) => (
                 <button
                   key={m.key}
                   type="button"
@@ -615,7 +604,7 @@ export function StdParamsView({
                       : 'text-slate-600 hover:text-slate-900'
                   }`}
                 >
-                  {m.label}
+                  {m.shortName}
                 </button>
               ))}
             </div>
@@ -751,6 +740,32 @@ export function StdParamsView({
                 </tbody>
               </table>
             </div>
+            {(selectedSheet === 'Assembly' || selectedSheet === 'ALL') && (
+              <div className="mt-3 rounded-xl bg-slate-50 border border-slate-200 px-4 py-3 text-[11px] text-slate-600 flex flex-col sm:flex-row sm:items-center justify-between gap-2.5">
+                <div className="space-y-0.5">
+                  <p className="text-slate-700 font-medium">
+                    <strong>Setting Wires on Board</strong> = Total Panjang COT (mm) ×{' '}
+                    <span className="font-mono-num">as_set_mm (0.22)</span> ×{' '}
+                    <span className="font-mono-num">(1 + (CCT_PPCS / 1000) × 0.25)</span>.
+                  </p>
+                  <p className="text-slate-500">
+                    <strong>Pemasangan Selang COT</strong> dipisah dari Taping Pre-COT (COT-B slit vs H-COT non-slit). Faktor taping Pre/Ujung/Post per DIA (D7–D36) dikelola di tab <strong>Matriks 2D → COT</strong>.
+                  </p>
+                </div>
+                <div className="flex items-center gap-2 shrink-0">
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setSelectedMatrix('cotMatrix');
+                      setViewMode('matrices');
+                    }}
+                    className="px-2.5 py-1.5 rounded-lg bg-white border border-slate-200 text-[11px] font-semibold text-[#1E3A8A] hover:bg-blue-50/60 transition-colors cursor-pointer whitespace-nowrap"
+                  >
+                    Buka Matriks COT (D7–D36)
+                  </button>
+                </div>
+              </div>
+            )}
           </div>
         )}
 
@@ -758,7 +773,7 @@ export function StdParamsView({
         {viewMode === 'matrices' && (
           <div className="mt-4">
             <div className="rounded-xl border border-slate-200 bg-white overflow-x-auto p-5">
-              <div className="flex items-center justify-between gap-3 mb-3">
+              <div className="flex flex-wrap items-center justify-between gap-3 mb-3">
                 <h2 className="text-sm font-bold text-slate-900">{matrixMeta.title}</h2>
                 <span className="text-[11px] text-slate-500">
                   Klik <strong>Edit Data</strong> untuk mengubah nilai matriks
@@ -767,13 +782,16 @@ export function StdParamsView({
               <table className="w-full text-left border-collapse">
                 <thead>
                   <tr className="border-b border-slate-200 text-xs font-semibold text-slate-700 bg-slate-50">
-                    <th className="py-2.5 px-3 border border-slate-200">Rentang LOT</th>
+                    <th className="py-2.5 px-3 border border-slate-200 whitespace-nowrap">
+                      {matrixMeta.rowHeaderLabel}
+                    </th>
                     {matrixMeta.colLabels.map((col, ci) => (
                       <th
                         key={ci}
-                        className="py-2.5 px-3 border border-slate-200 text-center font-mono-num"
+                        className="py-2.5 px-3 border border-slate-200 text-center font-mono-num whitespace-nowrap"
                       >
-                        {col} mm
+                        {col}
+                        {matrixMeta.colSuffix}
                       </th>
                     ))}
                   </tr>
@@ -789,13 +807,44 @@ export function StdParamsView({
                           key={ci}
                           className="py-2.5 px-3 border border-slate-200 text-center font-mono-num text-xs font-semibold text-slate-900 tabular-nums"
                         >
-                          {matrixMeta.data[ri]?.[ci] ?? 0}
+                          {formatMatrixCell(matrixMeta.data[ri]?.[ci] ?? 0, selectedMatrix, ci)}
                         </td>
                       ))}
                     </tr>
                   ))}
                 </tbody>
               </table>
+
+              {selectedMatrix === 'cotMatrix' && (
+                <div className="mt-4 rounded-xl bg-slate-50 border border-slate-200 px-4 py-3 text-[11px] text-slate-600 space-y-1">
+                  <p className="font-semibold text-slate-800">
+                    Rumus Kalkulasi Otomatis Proses #17 (Taping COT &amp; Multi-Branch — Master_COT_V2):
+                  </p>
+                  <p className="font-mono-num text-slate-700">
+                    T_pre = ((3.5 + L × Pre_Full) + (3.5 + L × Pre_Half) + (max(1, floor(L / 150)) × T_Spot)) / 3
+                  </p>
+                  <p className="font-mono-num text-slate-700">
+                    T_ujung = T_Ujung_Branch &nbsp;|&nbsp; T_post = ((3.5 + L × Post_Full) + (3.5 + L × Post_Half) + (max(0, floor(L / 150) - 1) × T_Spot)) / 3 &nbsp;|&nbsp; Detik/Baris = (T_pre + T_ujung + T_post) × QTY
+                  </p>
+                  <p className="text-slate-500">
+                    Perubahan nilai matriks di sini otomatis diterapkan pada kalkulasi Base UMH (Total Detik / 3600) saat input maupun refresh UMH.
+                  </p>
+                </div>
+              )}
+
+              {selectedMatrix === 'settingWireMatrix' && (
+                <div className="mt-4 rounded-xl bg-slate-50 border border-slate-200 px-4 py-3 text-[11px] text-slate-600 space-y-1">
+                  <p className="font-semibold text-slate-800">
+                    Catatan Referensi Matriks T1–T7 (Arsip / Custom Logic Disc):
+                  </p>
+                  <p className="text-slate-600">
+                    Proses #17 (Assembly v4.0.0) kini menghitung <strong>Setting Wires on Board</strong> langsung berdasarkan <strong>Total Panjang COT (mm) × as_set_mm (0.22 dtk/mm) × (1 + (CCT PPCS / 1000) × 0.25)</strong> tanpa ketergantungan matriks T1–T7.
+                  </p>
+                  <p className="text-slate-500">
+                    Matriks ini tetap tersedia jika Anda ingin membuat rumus kustom pada tab <strong>Logic Disc</strong>.
+                  </p>
+                </div>
+              )}
             </div>
           </div>
         )}
@@ -1069,6 +1118,7 @@ export function StdParamsView({
         <StdBulkEditModal
           currentDb={draft}
           initialTab={bulkModal.initialTab}
+          initialMatrix={selectedMatrix}
           initialStage={bulkModal.initialStage}
           initialDraftDb={bulkModal.initialDraftDb}
           source={bulkModal.source}

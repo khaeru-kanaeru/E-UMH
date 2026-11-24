@@ -20,6 +20,7 @@ import {
 import {
   MASTER_SOURCE_LABELS,
   MATRIX_CONFIGS,
+  MatrixKey,
   computeStdMatricesDiff,
   computeStdParamsDiff,
   createMasterChangeEntry,
@@ -29,6 +30,7 @@ import { loadLastPicName } from '../utils/storage';
 interface StdBulkEditModalProps {
   currentDb: StdDatabase;
   initialTab: 'substeps' | 'matrices';
+  initialMatrix?: MatrixKey;
   initialStage?: 'edit' | 'confirm';
   initialDraftDb?: StdDatabase;
   source: MasterChangeSource;
@@ -41,6 +43,7 @@ interface StdBulkEditModalProps {
 export function StdBulkEditModal({
   currentDb,
   initialTab,
+  initialMatrix = 'acMatrix',
   initialStage = 'edit',
   initialDraftDb,
   source,
@@ -54,9 +57,7 @@ export function StdBulkEditModal({
   );
   const [stage, setStage] = useState<'edit' | 'confirm'>(initialStage);
   const [activeTab, setActiveTab] = useState<'substeps' | 'matrices'>(initialTab);
-  const [selectedMatrix, setSelectedMatrix] = useState<'acMatrix' | 'saMatrix' | 'mcMatrix'>(
-    'acMatrix'
-  );
+  const [selectedMatrix, setSelectedMatrix] = useState<MatrixKey>(initialMatrix);
   const [selectedSheet, setSelectedSheet] = useState<string>('ALL');
   const [searchQuery, setSearchQuery] = useState('');
   const [onlyChanged, setOnlyChanged] = useState(false);
@@ -130,7 +131,7 @@ export function StdBulkEditModal({
   };
 
   const handleMatrixCellChange = (
-    matrixKey: 'acMatrix' | 'saMatrix' | 'mcMatrix',
+    matrixKey: MatrixKey,
     rIdx: number,
     cIdx: number,
     val: string
@@ -138,7 +139,7 @@ export function StdBulkEditModal({
     const num = parseFloat(val);
     setDraft((prev) => ({
       ...prev,
-      [matrixKey]: prev[matrixKey].map((row, ri) =>
+      [matrixKey]: (prev[matrixKey] ?? []).map((row, ri) =>
         ri === rIdx
           ? row.map((cell, ci) => (ci === cIdx ? (Number.isFinite(num) ? num : 0) : cell))
           : row
@@ -332,7 +333,7 @@ export function StdBulkEditModal({
                   </label>
                 </div>
               ) : (
-                <div className="inline-flex items-center p-1 rounded-xl bg-slate-200/70 border border-slate-200 self-start lg:self-auto">
+                <div className="inline-flex items-center p-1 rounded-xl bg-slate-200/70 border border-slate-200 self-start lg:self-auto overflow-x-auto max-w-full">
                   {MATRIX_CONFIGS.map((m) => (
                     <button
                       key={m.key}
@@ -434,10 +435,8 @@ export function StdBulkEditModal({
                 </div>
               ) : (
                 <div className="rounded-xl border border-slate-200 bg-white overflow-x-auto p-5">
-                  <div className="flex items-center justify-between gap-3 mb-3">
-                    <h3 className="text-sm font-bold text-slate-900">
-                      {activeMatrixCfg.name} (Detik/CCT: LOT × Panjang Kabel)
-                    </h3>
+                  <div className="flex flex-wrap items-center justify-between gap-3 mb-3">
+                    <h3 className="text-sm font-bold text-slate-900">{activeMatrixCfg.title}</h3>
                     <span className="text-xs text-slate-500">
                       Semua sel dapat langsung diedit bersamaan
                     </span>
@@ -445,13 +444,16 @@ export function StdBulkEditModal({
                   <table className="w-full text-left border-collapse">
                     <thead>
                       <tr className="border-b border-slate-200 text-xs font-semibold text-slate-700 bg-slate-50">
-                        <th className="py-2.5 px-3 border border-slate-200">Rentang LOT</th>
+                        <th className="py-2.5 px-3 border border-slate-200 whitespace-nowrap">
+                          {activeMatrixCfg.rowHeaderLabel}
+                        </th>
                         {activeMatrixCfg.colLabels.map((col, ci) => (
                           <th
                             key={ci}
-                            className="py-2.5 px-3 border border-slate-200 text-center font-mono-num"
+                            className="py-2.5 px-3 border border-slate-200 text-center font-mono-num whitespace-nowrap"
                           >
-                            {col} mm
+                            {col}
+                            {activeMatrixCfg.colSuffix}
                           </th>
                         ))}
                       </tr>
@@ -481,7 +483,13 @@ export function StdBulkEditModal({
                                   onChange={(e) =>
                                     handleMatrixCellChange(selectedMatrix, ri, ci, e.target.value)
                                   }
-                                  className={`w-20 text-center font-mono-num text-xs font-semibold px-2 py-1.5 rounded-lg border focus:outline-none focus:ring-2 focus:ring-[#1E3A8A]/20 ${
+                                  className={`${
+                                    selectedMatrix === 'settingWireMatrix'
+                                      ? 'w-28'
+                                      : selectedMatrix === 'cotMatrix'
+                                      ? 'w-24'
+                                      : 'w-20'
+                                  } text-center font-mono-num text-xs font-semibold px-2 py-1.5 rounded-lg border focus:outline-none focus:ring-2 focus:ring-[#1E3A8A]/20 ${
                                     isChanged
                                       ? 'bg-white border-[#1E3A8A] text-[#1E3A8A]'
                                       : 'bg-slate-50 border-slate-200 text-slate-900 focus:bg-white focus:border-[#1E3A8A]'

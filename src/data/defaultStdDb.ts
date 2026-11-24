@@ -1,3 +1,4 @@
+import { DEFAULT_COT_MATRIX, DEFAULT_SETTING_WIRE_MATRIX } from './cotMasterV2';
 import {
   AssyInputPayload,
   AutoCutItem,
@@ -166,6 +167,8 @@ export const DEFAULT_STD_DATABASE: StdDatabase = {
     [150, 200, 650, 1300],
     [180, 240, 780, 1560],
   ],
+  cotMatrix: structuredClone(DEFAULT_COT_MATRIX),
+  settingWireMatrix: structuredClone(DEFAULT_SETTING_WIRE_MATRIX),
   params: [
     { id: 'ac_rep_app', sheet: 'Autocutting', stage: 'Dandori', name: 'Replace applicator & terminals', basis: 'sec/lot', val: 210 },
     { id: 'ac_trial', sheet: 'Autocutting', stage: 'Dandori', name: 'Check a trial shot', basis: 'sec/lot', val: 30 },
@@ -336,26 +339,28 @@ export const DEFAULT_STD_DATABASE: StdDatabase = {
     { id: 'hs_a2', sheet: 'Housing', stage: 'After', name: 'Organizing wire bundles (per unit PQ)', basis: 'sec/lot', val: 8.14 },
     { id: 'hs_a3', sheet: 'Housing', stage: 'After', name: 'Tidying up wire bundles (per unit PQ)', basis: 'sec/lot', val: 2.43 },
     { id: 'hs_a_pq', sheet: 'Housing', stage: 'After', name: 'Post-housing PQ (default = 1)', basis: 'multiplier', val: 1 },
-    { id: 'as_scan', sheet: 'Assembly', stage: 'General', name: 'Scan the barcode', basis: 'sec/lot', val: 87.5 },
-    { id: 'as_tr_in', sheet: 'Assembly', stage: 'General', name: 'Wire transport', basis: 'sec/unit(pcs)', val: 65 },
-    { id: 'as_set_u99', sheet: 'Assembly', stage: 'Under 99 CCT', name: 'Setting wires on board (per dim point)', basis: 'sec/unit(pcs)', val: 5.4375 },
-    { id: 'as_set_o100', sheet: 'Assembly', stage: 'Over 100 CCT', name: 'Setting wires on board (per dim point)', basis: 'sec/unit(pcs)', val: 44.767677 },
-    { id: 'as_tap_u99', sheet: 'Assembly', stage: 'Under 99 CCT', name: 'Taping the wires (per mm non-B)', basis: 'sec/unit(pcs)', val: 0.039632278 },
-    { id: 'as_tap_o100', sheet: 'Assembly', stage: 'Over 100 CCT', name: 'Taping the wires (per mm non-B)', basis: 'sec/unit(pcs)', val: 0.065628357 },
-    { id: 'as_cot_u99', sheet: 'Assembly', stage: 'Under 99 CCT', name: 'Taping COT (per C)', basis: 'sec/unit(pcs)', val: 65.076923 },
-    { id: 'as_cot_o100', sheet: 'Assembly', stage: 'Over 100 CCT', name: 'Taping COT (per C)', basis: 'sec/unit(pcs)', val: 72.080882 },
-    { id: 'as_mea_u99', sheet: 'Assembly', stage: 'Under 99 CCT', name: 'Measuring wire length (per dim point)', basis: 'sec/unit(pcs)', val: 6.6666667 },
-    { id: 'as_mea_o100', sheet: 'Assembly', stage: 'Over 100 CCT', name: 'Measuring wire length (per dim point)', basis: 'sec/unit(pcs)', val: 9.2432432 },
-    { id: 'as_mrk', sheet: 'Assembly', stage: 'Both', name: 'Attaching markers (per nm)', basis: 'sec/unit(pcs)', val: 7.2820513 },
-    { id: 'as_spt_u99', sheet: 'Assembly', stage: 'Under 99 CCT', name: 'Attaching spot tape (per ns)', basis: 'sec/unit(pcs)', val: 8.5833333 },
-    { id: 'as_spt_o100', sheet: 'Assembly', stage: 'Over 100 CCT', name: 'Attaching spot tape (per ns)', basis: 'sec/unit(pcs)', val: 12.636986 },
-    { id: 'as_clp', sheet: 'Assembly', stage: 'Both', name: 'Attaching clips (per nx)', basis: 'sec/unit(pcs)', val: 9.902439 },
-    { id: 'as_clm', sheet: 'Assembly', stage: 'Both', name: 'Attaching clamps (per ny)', basis: 'sec/unit(pcs)', val: 29.1129032 },
-    { id: 'as_bar_o100', sheet: 'Assembly', stage: 'Over 100 CCT', name: 'Attaching barcodes (Over 100 CCT)', basis: 'sec/unit(pcs)', val: 166 },
-    { id: 'as_nmp', sheet: 'Assembly', stage: 'Both', name: 'Attaching nameplates (per nn)', basis: 'sec/unit(pcs)', val: 20 },
-    { id: 'as_rem_u99', sheet: 'Assembly', stage: 'Under 99 CCT', name: 'Removing harness from board (per dim)', basis: 'sec/unit(pcs)', val: 2.333333 },
-    { id: 'as_rem_o100', sheet: 'Assembly', stage: 'Over 100 CCT', name: 'Removing harness from board (per dim)', basis: 'sec/unit(pcs)', val: 1.2272727 },
-    { id: 'as_tr_out', sheet: 'Assembly', stage: 'General', name: 'Transporting the harness', basis: 'sec/lot', val: 40 },
+    { id: 'as_scan_start', sheet: 'Assembly', stage: 'Persiapan', name: 'Scan Barcode Awal', basis: 'sec/unit(pcs)', val: 10 },
+    { id: 'as_tr_in', sheet: 'Assembly', stage: 'Persiapan', name: 'Wire Transport (bawa gulungan ke jig)', basis: 'sec/unit(pcs)', val: 30 },
+    { id: 'as_untangle', sheet: 'Assembly', stage: 'Persiapan', name: 'Urai Gulungan Wire Panjang (>2500 mm)', basis: 'sec/unit(pcs)', val: 2 },
+    { id: 'as_set_mm', sheet: 'Assembly', stage: 'Setting Wire', name: 'Setting Wires on Board (per mm panjang COT × density PPCS)', basis: 'sec/unit(pcs)', val: 0.22 },
+    { id: 'as_tap_non_cot', sheet: 'Assembly', stage: 'Taping Non-COT', name: 'Taping Wire Non-COT (per mm)', basis: 'sec/unit(pcs)', val: 0.065628357 },
+    { id: 'as_cot_pre', sheet: 'Assembly', stage: 'Master_COT_V2', name: 'Taping Pre-COT (Full/Half 25mm/Spot 150mm + 3.5s, per DIA)', basis: 'sec/unit(pcs)', val: 3.5 },
+    { id: 'as_cot_ins_b_base', sheet: 'Assembly', stage: 'Pemasangan COT', name: 'Pemasangan Selang COT-B / Slit — Base (per pcs)', basis: 'sec/unit(pcs)', val: 3.0 },
+    { id: 'as_cot_ins_b_mm', sheet: 'Assembly', stage: 'Pemasangan COT', name: 'Pemasangan Selang COT-B / Slit — Panjang (per mm)', basis: 'sec/unit(pcs)', val: 0.035 },
+    { id: 'as_cot_ins_h_base', sheet: 'Assembly', stage: 'Pemasangan COT', name: 'Pemasangan Selang H-COT / Non-Slit — Base (per pcs)', basis: 'sec/unit(pcs)', val: 5.0 },
+    { id: 'as_cot_ins_h_mm', sheet: 'Assembly', stage: 'Pemasangan COT', name: 'Pemasangan Selang H-COT / Non-Slit — Panjang (per mm)', basis: 'sec/unit(pcs)', val: 0.065 },
+    { id: 'as_cot_ujung', sheet: 'Assembly', stage: 'Master_COT_V2', name: 'Tutup Ujung & Taping Branch / Persimpangan COT (Multi-Branch D7–D36)', basis: 'sec/unit(pcs)', val: 3.2 },
+    { id: 'as_cot_post', sheet: 'Assembly', stage: 'Master_COT_V2', name: 'Taping Post-COT (Full/Half 25mm/Spot 150mm + 3.5s, per DIA)', basis: 'sec/unit(pcs)', val: 3.5 },
+    { id: 'as_mea', sheet: 'Assembly', stage: 'Measuring', name: 'Measuring dimensi panjang branch (+15% non-COT)', basis: 'sec/unit(pcs)', val: 9.24 },
+    { id: 'as_mrk', sheet: 'Assembly', stage: 'Accessories', name: 'Attaching Markers (per nm)', basis: 'sec/unit(pcs)', val: 7.28 },
+    { id: 'as_spt', sheet: 'Assembly', stage: 'Accessories', name: 'Attaching Spot Tape Tambahan (per ns)', basis: 'sec/unit(pcs)', val: 10.61 },
+    { id: 'as_clp', sheet: 'Assembly', stage: 'Accessories', name: 'Attaching Clips (per nx)', basis: 'sec/unit(pcs)', val: 9.9 },
+    { id: 'as_clm', sheet: 'Assembly', stage: 'Accessories', name: 'Attaching Clamps (per ny)', basis: 'sec/unit(pcs)', val: 29.11 },
+    { id: 'as_nmp', sheet: 'Assembly', stage: 'Accessories', name: 'Attaching Nameplates (per nn)', basis: 'sec/unit(pcs)', val: 20 },
+    { id: 'as_bar', sheet: 'Assembly', stage: 'Accessories', name: 'Attaching Barcode Harness', basis: 'sec/unit(pcs)', val: 166 },
+    { id: 'as_rem', sheet: 'Assembly', stage: 'Finishing', name: 'Removing Harness from Board (per branch)', basis: 'sec/unit(pcs)', val: 1.23 },
+    { id: 'as_scan_end', sheet: 'Assembly', stage: 'Finishing', name: 'Scan Barcode Akhir', basis: 'sec/unit(pcs)', val: 5 },
+    { id: 'as_tr_out', sheet: 'Assembly', stage: 'Finishing', name: 'Transport the Harness (1 pcs)', basis: 'sec/unit(pcs)', val: 40 },
     { id: 'in_vis_slope', sheet: 'Inspection', stage: 'Visual', name: 'Visual slope (per CCT * 86400)', basis: 'formula', val: 0.0001 },
     { id: 'in_vis_int', sheet: 'Inspection', stage: 'Visual', name: 'Visual intercept (* 86400)', basis: 'formula', val: 0.0083 },
     { id: 'in_chk_slope', sheet: 'Inspection', stage: 'Checker <200', name: 'Checker <200 CCT slope (* 86400)', basis: 'formula', val: 0.00004 },
@@ -366,6 +371,97 @@ export const DEFAULT_STD_DATABASE: StdDatabase = {
     { id: 'in_fin_int', sheet: 'Inspection', stage: 'Finishing', name: 'Finishing intercept (* 86400)', basis: 'formula', val: 0.0025 },
   ],
 };
+
+const LEGACY_ASSEMBLY_PARAM_IDS = new Set([
+  'as_scan',
+  'as_set_board',
+  'as_set_u99',
+  'as_set_o100',
+  'as_set_t1',
+  'as_set_t2',
+  'as_set_t3',
+  'as_set_t4',
+  'as_set_t5',
+  'as_set_t6',
+  'as_set_t7',
+  'as_tap_u99',
+  'as_tap_o100',
+  'as_cot_u99',
+  'as_cot_o100',
+  'as_mea_u99',
+  'as_mea_o100',
+  'as_spt_u99',
+  'as_spt_o100',
+  'as_bar_o100',
+  'as_rem_u99',
+  'as_rem_o100',
+]);
+
+const LEGACY_ASSEMBLY_DEFAULT_VALS: Record<string, number> = {
+  as_tr_in: 65,
+  as_mrk: 7.2820513,
+  as_clp: 9.902439,
+  as_clm: 29.1129032,
+};
+
+/**
+ * Migrasi otomatis parameter Assembly lama ke daftar parameter Assembly kronologis
+ * (1 baris Setting Wires on Board + COT eksplisit + basis tunggal sec/unit(pcs))
+ * dan selalu mengurutkan blok Assembly secara kronologis dari awal sampai akhir.
+ */
+export function upgradeAssemblyStdParams(params: StdDatabase['params']): StdDatabase['params'] {
+  const defaultAssemblyList = DEFAULT_STD_DATABASE.params.filter((p) => p.sheet === 'Assembly');
+  const savedById = new Map(params.map((p) => [p.id, p]));
+
+  // 1. Pertahankan seluruh parameter non-Assembly dalam urutan aslinya
+  const nonAssemblyParams = params.filter(
+    (p) => p.sheet !== 'Assembly' && !LEGACY_ASSEMBLY_PARAM_IDS.has(p.id)
+  );
+
+  // 2. Susun ulang seluruh parameter Assembly secara kronologis sesuai urutan kanonik
+  const orderedAssemblyParams = defaultAssemblyList.map((def) => {
+    const existing = savedById.get(def.id);
+    if (!existing) return structuredClone(def);
+
+    const legacyDefault = LEGACY_ASSEMBLY_DEFAULT_VALS[def.id];
+    const nextVal =
+      legacyDefault !== undefined && Math.abs(Number(existing.val) - legacyDefault) < 1e-6
+        ? def.val
+        : Number.isFinite(Number(existing.val))
+        ? Number(existing.val)
+        : def.val;
+
+    return {
+      ...existing,
+      sheet: def.sheet,
+      stage: def.stage,
+      name: def.name,
+      basis: def.basis,
+      val: nextVal,
+    };
+  });
+
+  // 3. Sisipkan blok Assembly terurut tepat sebelum grup Inspection
+  const firstInspIdx = nonAssemblyParams.findIndex((p) => p.sheet === 'Inspection');
+  const merged =
+    firstInspIdx >= 0
+      ? [
+          ...nonAssemblyParams.slice(0, firstInspIdx),
+          ...orderedAssemblyParams,
+          ...nonAssemblyParams.slice(firstInspIdx),
+        ]
+      : [...nonAssemblyParams, ...orderedAssemblyParams];
+
+  // 4. Pastikan tidak ada parameter default non-Assembly yang hilang
+  const mergedIds = new Set(merged.map((p) => p.id));
+  for (const dp of DEFAULT_STD_DATABASE.params) {
+    if (dp.sheet !== 'Assembly' && !mergedIds.has(dp.id)) {
+      merged.push(structuredClone(dp));
+    }
+  }
+
+  return merged;
+}
 
 export const SAMPLE_KHR_PAYLOAD: AssyInputPayload = {
   id: 'sample_khr55431',

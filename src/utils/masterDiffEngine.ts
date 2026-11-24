@@ -1,4 +1,10 @@
 import {
+  STD_COT_COL_LABELS,
+  STD_COT_ROW_LABELS,
+  STD_SETTING_WIRE_COL_LABELS,
+  STD_SETTING_WIRE_ROW_LABELS,
+} from '../data/cotMasterV2';
+import {
   AutoCutItem,
   FeederItem,
   MasterChangeCategory,
@@ -8,6 +14,20 @@ import {
   StdDatabase,
   StdParamItem,
 } from '../types/umh';
+
+export {
+  STD_COT_COL_LABELS,
+  STD_COT_ROW_LABELS,
+  STD_SETTING_WIRE_COL_LABELS,
+  STD_SETTING_WIRE_ROW_LABELS,
+};
+
+export type MatrixKey =
+  | 'acMatrix'
+  | 'saMatrix'
+  | 'mcMatrix'
+  | 'cotMatrix'
+  | 'settingWireMatrix';
 
 export const STD_COL_LABELS_7 = [
   '0~1000',
@@ -51,30 +71,79 @@ export const STD_MC_ROW_LABELS = [
   'LOT 51~',
 ];
 
-export const MATRIX_CONFIGS = [
+export interface MatrixConfigDef {
+  key: MatrixKey;
+  name: string;
+  shortName: string;
+  sheetName: string;
+  title: string;
+  rowHeaderLabel: string;
+  colSuffix: string;
+  unitLabel: string;
+  rowLabels: string[];
+  colLabels: string[];
+}
+
+export const MATRIX_CONFIGS: MatrixConfigDef[] = [
   {
-    key: 'acMatrix' as const,
+    key: 'acMatrix',
     name: 'Matriks 2D Autocutting',
     shortName: 'Autocutting',
     sheetName: 'Matriks Autocutting',
+    title: 'Matriks 2D Autocutting (Detik/CCT: LOT × Panjang Kabel)',
+    rowHeaderLabel: 'Rentang LOT',
+    colSuffix: ' mm',
+    unitLabel: 'Detik / CCT',
     rowLabels: STD_AC_ROW_LABELS,
     colLabels: STD_COL_LABELS_7,
   },
   {
-    key: 'saMatrix' as const,
+    key: 'saMatrix',
     name: 'Matriks 2D Semi-autocutting',
     shortName: 'Semi-Auto',
     sheetName: 'Matriks Semi-Auto',
+    title: 'Matriks 2D Semi-autocutting (Detik/CCT: LOT × Panjang Kabel)',
+    rowHeaderLabel: 'Rentang LOT',
+    colSuffix: ' mm',
+    unitLabel: 'Detik / CCT',
     rowLabels: STD_SA_ROW_LABELS,
     colLabels: STD_COL_LABELS_7,
   },
   {
-    key: 'mcMatrix' as const,
+    key: 'mcMatrix',
     name: 'Matriks 2D Manual-(Air)cutting',
     shortName: 'Manual-(Air)',
     sheetName: 'Matriks Manual',
+    title: 'Matriks 2D Manual-（Air）cutting (Detik/CCT: LOT × Panjang Kabel)',
+    rowHeaderLabel: 'Rentang LOT',
+    colSuffix: ' mm',
+    unitLabel: 'Detik / CCT',
     rowLabels: STD_MC_ROW_LABELS,
     colLabels: STD_COL_LABELS_4,
+  },
+  {
+    key: 'cotMatrix',
+    name: 'Matriks COT (Master_COT_V2)',
+    shortName: 'COT (Master_COT_V2)',
+    sheetName: 'Matriks COT V2',
+    title: 'Matriks Faktor Waktu Taping COT — Master_COT_V2 (DIA × Faktor Detik)',
+    rowHeaderLabel: 'DIA',
+    colSuffix: '',
+    unitLabel: 'Master_COT_V2',
+    rowLabels: STD_COT_ROW_LABELS,
+    colLabels: STD_COT_COL_LABELS,
+  },
+  {
+    key: 'settingWireMatrix',
+    name: 'Matriks Setting Wires on Board (T1–T7)',
+    shortName: 'Setting Wires (T1–T7)',
+    sheetName: 'Matriks Setting Wire',
+    title: 'Auto-Lookup Matrix Setting Wires on Board — MATRIX_SETTING_WIRE_CCT (Jenjang CCT PPCS × Rate dtk/CCT)',
+    rowHeaderLabel: 'Jenjang CCT (PPCS)',
+    colSuffix: '',
+    unitLabel: 'dtk / CCT',
+    rowLabels: STD_SETTING_WIRE_ROW_LABELS,
+    colLabels: STD_SETTING_WIRE_COL_LABELS,
   },
 ];
 
@@ -158,8 +227,8 @@ export function computeStdMatricesDiff(
           diffs.push({
             key: `${cfg.key}_${rIdx}_${cIdx}`,
             group: cfg.name,
-            label: `${rowLbl} × ${colLbl} mm`,
-            subLabel: 'Detik / CCT',
+            label: `${rowLbl} × ${colLbl}${cfg.colSuffix}`,
+            subLabel: cfg.unitLabel,
             action: 'modified',
             beforeValue: fmtNum(prevVal),
             afterValue: fmtNum(nextVal),
@@ -320,7 +389,7 @@ export function createMasterChangeEntry(params: {
 
 export const MASTER_CATEGORY_LABELS: Record<MasterChangeCategory, string> = {
   std_params: 'Parameter STD (Sub-Step)',
-  std_matrices: 'Matriks 2D (LOT × Panjang)',
+  std_matrices: 'Matriks 2D (LOT × Panjang & COT V2)',
   auto_cut: 'Auto Cutting List',
   feeder: 'Feeder List (Wire Seal)',
 };

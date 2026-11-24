@@ -1,9 +1,14 @@
-import { DEFAULT_PROCESS_DISCS } from '../data/defaultProcessDiscs';
+import { upgradeLegacyCotMatrix, upgradeSettingWireMatrix } from '../data/cotMasterV2';
+import {
+  DEFAULT_PROCESS_DISCS,
+  upgradeBuiltinProcessDiscs,
+} from '../data/defaultProcessDiscs';
 import {
   DEFAULT_AUTO_CUT_LIST,
   DEFAULT_FEEDER_LIST,
   DEFAULT_STD_DATABASE,
   SAMPLE_KHR_PAYLOAD,
+  upgradeAssemblyStdParams,
 } from '../data/defaultStdDb';
 import { calculateUmh } from '../engine/umhCalculator';
 import {
@@ -97,11 +102,9 @@ export function loadStdDatabase(): StdDatabase {
       if (!saved.acMatrix) saved.acMatrix = structuredClone(DEFAULT_STD_DATABASE.acMatrix);
       if (!saved.saMatrix) saved.saMatrix = structuredClone(DEFAULT_STD_DATABASE.saMatrix);
       if (!saved.mcMatrix) saved.mcMatrix = structuredClone(DEFAULT_STD_DATABASE.mcMatrix);
-      DEFAULT_STD_DATABASE.params.forEach((dp) => {
-        if (!saved.params.find((sp) => sp.id === dp.id)) {
-          saved.params.push(structuredClone(dp));
-        }
-      });
+      saved.cotMatrix = upgradeLegacyCotMatrix(saved.cotMatrix);
+      saved.settingWireMatrix = upgradeSettingWireMatrix(saved.settingWireMatrix);
+      saved.params = upgradeAssemblyStdParams(saved.params);
       if (!Array.isArray(saved.processDiscs) || saved.processDiscs.length === 0) {
         saved.processDiscs = structuredClone(DEFAULT_PROCESS_DISCS);
       } else {
@@ -110,6 +113,7 @@ export function loadStdDatabase(): StdDatabase {
             saved.processDiscs!.push(structuredClone(dd));
           }
         });
+        saved.processDiscs = upgradeBuiltinProcessDiscs(saved.processDiscs);
         saved.processDiscs.sort((a, b) => a.processId - b.processId);
       }
       return saved;

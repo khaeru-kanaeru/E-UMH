@@ -1,4 +1,7 @@
-import { DEFAULT_PROCESS_DISCS } from '../data/defaultProcessDiscs';
+import {
+  DEFAULT_PROCESS_DISCS,
+  upgradeBuiltinProcessDiscs,
+} from '../data/defaultProcessDiscs';
 import { PROCESS_DIFF_MAP } from '../data/defaultStdDb';
 import {
   AllowanceMode,
@@ -220,10 +223,11 @@ export function calculateUmh(
   const { ppcsList: ppcs } = payload;
   const lotMetrics = computeLotMetrics(payload.params.lot);
 
-  const activeDiscs = [...(stdDb.processDiscs && stdDb.processDiscs.length > 0
-    ? stdDb.processDiscs
-    : DEFAULT_PROCESS_DISCS
-  )].sort((a, b) => a.processId - b.processId);
+  const activeDiscs = upgradeBuiltinProcessDiscs(
+    stdDb.processDiscs && stdDb.processDiscs.length > 0
+      ? [...stdDb.processDiscs]
+      : [...DEFAULT_PROCESS_DISCS]
+  ).sort((a, b) => a.processId - b.processId);
 
   const twistBundlesCount = groupTwistBundlesCount(ppcs);
 

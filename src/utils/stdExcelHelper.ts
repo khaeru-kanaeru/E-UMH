@@ -49,7 +49,7 @@ function styleSheetHeader(ws: Record<string, any>, colCount: number, headerRowId
 
 /**
  * Downloads a multi-sheet editable XLSX template containing all Sub-Step STD Parameters
- * and all 3 2D Lookup Matrices (Autocutting, Semi-Auto, Manual) pre-filled with current values.
+ * and all 4 2D Lookup Matrices (Autocutting, Semi-Auto, Manual, COT Master_COT_V2) pre-filled with current values.
  */
 export function exportStdParamsTemplateXlsx(stdDb: StdDatabase): void {
   const wb = XLSX.utils.book_new();
@@ -88,11 +88,11 @@ export function exportStdParamsTemplateXlsx(stdDb: StdDatabase): void {
   }
   XLSX.utils.book_append_sheet(wb, wsParams, 'Parameter Sub-Step');
 
-  // Sheets 2-4: 2D Matrices
+  // Sheets 2-5: 2D Matrices (Autocutting, Semi-Auto, Manual, COT V2)
   MATRIX_CONFIGS.forEach((cfg) => {
     const data = stdDb[cfg.key] || [];
     const rows: (string | number)[][] = [
-      ['Rentang LOT', ...cfg.colLabels.map((c) => `${c} mm`)],
+      [cfg.rowHeaderLabel, ...cfg.colLabels.map((c) => `${c}${cfg.colSuffix}`)],
     ];
     cfg.rowLabels.forEach((rowLbl, rIdx) => {
       rows.push([
@@ -102,7 +102,10 @@ export function exportStdParamsTemplateXlsx(stdDb: StdDatabase): void {
     });
 
     const ws = XLSX.utils.aoa_to_sheet(rows);
-    ws['!cols'] = [{ wch: 16 }, ...cfg.colLabels.map(() => ({ wch: 14 }))];
+    const firstColWch = cfg.key === 'settingWireMatrix' ? 32 : 16;
+    const colWch =
+      cfg.key === 'cotMatrix' ? 20 : cfg.key === 'settingWireMatrix' ? 24 : 14;
+    ws['!cols'] = [{ wch: firstColWch }, ...cfg.colLabels.map(() => ({ wch: colWch }))];
     styleSheetHeader(ws, cfg.colLabels.length + 1, 0);
 
     for (let r = 1; r < rows.length; r++) {
@@ -193,7 +196,7 @@ export async function parseStdParamsExcelFile(
 
     const normSheet = normStr(sheetName);
 
-    // 1. Check if sheet matches one of the 3 2D Matrices
+    // 1. Check if sheet matches one of the 5 2D Matrices (Autocutting, Semi-Auto, Manual, COT V2, Setting Wire)
     const matchedMatrixCfg = MATRIX_CONFIGS.find((cfg) => {
       if (normSheet === normStr(cfg.sheetName)) return true;
       if (cfg.key === 'acMatrix' && /auto\s*cut/i.test(normSheet) && !/semi/i.test(normSheet)) {
@@ -201,6 +204,13 @@ export async function parseStdParamsExcelFile(
       }
       if (cfg.key === 'saMatrix' && /semi/i.test(normSheet)) return true;
       if (cfg.key === 'mcMatrix' && /manual|air/i.test(normSheet)) return true;
+      if (cfg.key === 'cotMatrix' && /\bcot\b|master[\s_-]*cot/i.test(normSheet)) return true;
+      if (
+        cfg.key === 'settingWireMatrix' &&
+        /setting[\s_-]*wire|matrix[\s_-]*setting|setting[\s_-]*cct/i.test(normSheet)
+      ) {
+        return true;
+      }
       return false;
     });
 
@@ -208,7 +218,22 @@ export async function parseStdParamsExcelFile(
       let headerRow = -1;
       for (let r = 0; r < Math.min(grid.length, 10); r++) {
         const firstCell = normStr(grid[r]?.[0]);
-        if (firstCell.includes('lot') || firstCell.includes('rentang')) {
+        if (matchedMatrixCfg.key === 'cotMatrix') {
+          if (firstCell === 'dia' || firstCell.includes('diameter') || firstCell === 'kode dia') {
+            headerRow = r;
+            break;
+          }
+        } else if (matchedMatrixCfg.key === 'settingWireMatrix') {
+          if (
+            firstCell.includes('jenjang') ||
+            firstCell.includes('cct') ||
+            firstCell.includes('tier') ||
+            firstCell.includes('kode')
+          ) {
+            headerRow = r;
+            break;
+          }
+        } else if (firstCell.includes('lot') || firstCell.includes('rentang')) {
           headerRow = r;
           break;
         }
@@ -216,14 +241,58 @@ export async function parseStdParamsExcelFile(
       if (headerRow >= 0) {
         let updatedAnyCell = false;
         const targetMat = nextDb[matchedMatrixCfg.key];
-        for (let rIdx = 0; rIdx < matchedMatrixCfg.rowLabels.length; rIdx++) {
-          const row = grid[headerRow + 1 + rIdx];
-          if (!row) continue;
-          for (let cIdx = 0; cIdx < matchedMatrixCfg.colLabels.length; cIdx++) {
-            const parsed = parseNumCell(row[cIdx + 1]);
-            if (parsed !== null && targetMat[rIdx]) {
-              targetMat[rIdx][cIdx] = parsed;
+        if (matchedMatrixCfg.key === 'cotMatrix') {
+          const diaToIdx = new Map(
+            matchedMatrixCfg.rowLabels.map((lbl, idx) => [lbl.toUpperCase(), idx])
+          );
+          for (let r = headerRow + 1; r < grid.length; r++) {
+            const row = grid[r];
+            if (!row) continue;
+            const rawLbl = String(row[0] ?? '').trim().toUpperCase();
+            const fallbackIdx = r - (headerRow + 1);
+            const targetIdx =
+              diaToIdx.get(rawLbl) ??
+              (fallbackIdx >= 0 && fallbackIdx < matchedMatrixCfg.rowLabels.length
+                ? fallbackIdx
+                : -1);
+            if (targetIdx < 0 || !targetMat[targetIdx]) continue;
+            for (let cIdx = 0; cIdx < matchedMatrixCfg.colLabels.length; cIdx++) {
+              const parsed = parseNumCell(row[cIdx + 1]);
+              if (parsed !== null) {
+                targetMat[targetIdx][cIdx] = parsed;
+                updatedAnyCell = true;
+              }
+            }
+          }
+        } else if (matchedMatrixCfg.key === 'settingWireMatrix') {
+          for (let r = headerRow + 1; r < grid.length; r++) {
+            const row = grid[r];
+            if (!row) continue;
+            const rawLbl = String(row[0] ?? '').trim().toUpperCase();
+            const tierMatch = rawLbl.match(/^T([1-7])\b/);
+            const fallbackIdx = r - (headerRow + 1);
+            const targetIdx = tierMatch
+              ? parseInt(tierMatch[1], 10) - 1
+              : fallbackIdx >= 0 && fallbackIdx < matchedMatrixCfg.rowLabels.length
+              ? fallbackIdx
+              : -1;
+            if (targetIdx < 0 || !targetMat[targetIdx]) continue;
+            const parsed = parseNumCell(row[1]);
+            if (parsed !== null) {
+              targetMat[targetIdx][0] = parsed;
               updatedAnyCell = true;
+            }
+          }
+        } else {
+          for (let rIdx = 0; rIdx < matchedMatrixCfg.rowLabels.length; rIdx++) {
+            const row = grid[headerRow + 1 + rIdx];
+            if (!row) continue;
+            for (let cIdx = 0; cIdx < matchedMatrixCfg.colLabels.length; cIdx++) {
+              const parsed = parseNumCell(row[cIdx + 1]);
+              if (parsed !== null && targetMat[rIdx]) {
+                targetMat[rIdx][cIdx] = parsed;
+                updatedAnyCell = true;
+              }
             }
           }
         }

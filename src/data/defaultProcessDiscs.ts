@@ -866,44 +866,150 @@ export const DEFAULT_PROCESS_DISCS: ProcessLogicDisc[] = [
     processName: 'Assembly',
     jpName: 'アッセンブリ',
     weight: 1.45,
-    version: '1.0.0',
-    description: 'Perakitan harness di board (Under 99 vs Over 100 CCT), taping, COT, aksesoris (marker/spot tape/clip/clamp/nameplate).',
+    version: '4.0.0',
+    description: 'Perakitan board (Assembly) kronologis & basis tunggal sec/unit(pcs): Scan Awal -> Wire Transport -> Untangle (>2500mm) -> Setting Wires (panjang COT mm × 0.22 × cctDensityFactor PPCS) -> Taping Non-COT -> Taping Pre-COT -> Pemasangan Selang COT (COT-B & H-COT) -> Tutup Ujung & Branch COT -> Taping Post-COT -> Measuring (+15%) -> Aksesoris -> Removing -> Scan Akhir -> Transport Harness.',
     isEmptyTemplate: false,
     code: `function calculate(ctx) {
-  const { lot, ppcsCount, assemblyCotList: dwg, assemblyComponents, helpers } = ctx;
-  const { getP, mkSub } = helpers;
+  const { ppcsList: ppcs, assemblyCotList: dwg, partList: pl, assemblyComponents, helpers } = ctx;
+  const {
+    getP,
+    mkSub,
+    calculateCotTapingV2,
+    calculateSpotTapeFromPartList,
+  } = helpers;
 
-  const isOver100 = ppcsCount > 100;
-  const dimPoints = dwg.length;
-  const totalTl = dwg.reduce((a, b) => a + b.tl, 0);
-  const bareTl = dwg.filter((r) => r.type === 'B').reduce((a, b) => a + b.tl, 0);
-  const tapingTl = totalTl - bareTl;
-  const cotCount = dwg.filter((r) => r.type === 'C').length;
+  // 1) Sumber data aktual PPCS, COT, dan Aksesoris
+  const totalCctPpcs = ppcs.filter(
+    (r) =>
+      (r.assyNo && String(r.assyNo).trim() !== '') ||
+      (r.cctNo && String(r.cctNo).trim() !== '')
+  ).length;
+  const untangleWireQty = ppcs.filter((r) => Number(r.cl) > 2500).length;
+
+  const preTapeBaseSec = getP('as_cot_pre', 3.5);
+  const postTapeBaseSec = getP('as_cot_post', 3.5);
+  const cotBBaseSec = getP('as_cot_ins_b_base', 3.0);
+  const cotBPerMmSec = getP('as_cot_ins_b_mm', 0.035);
+  const hCotBaseSec = getP('as_cot_ins_h_base', 5.0);
+  const hCotPerMmSec = getP('as_cot_ins_h_mm', 0.065);
+
+  const cotV2 = calculateCotTapingV2(dwg, pl, {
+    preTapeBaseSec,
+    postTapeBaseSec,
+    cotBBaseSec,
+    cotBPerMmSec,
+    hCotBaseSec,
+    hCotPerMmSec,
+  });
+  const totalCotQty = cotV2 ? cotV2.totalPieces : 0;
+  const totalCotLengthMm = cotV2 ? cotV2.totalLengthMm : 0;
+  const totalTarikanCot = cotV2 ? cotV2.totalTarikanCot : 0;
+  const totalCotInsertSec = cotV2 ? cotV2.totalInsertSec || 0 : 0;
+  const cotBQty = cotV2 ? cotV2.cotBQty || 0 : 0;
+  const hCotQty = cotV2 ? cotV2.hCotQty || 0 : 0;
+
+  const spotFromPl = calculateSpotTapeFromPartList
+    ? calculateSpotTapeFromPartList(pl)
+    : { spotCount: 0, totalMeters: 0 };
   const {
     markerQty: nm = 0,
-    spotTapeQty: ns = 0,
+    spotTapeQty: rawNs = 0,
     namePlateQty: nn = 0,
     clipQty: nx = 0,
     clampQty: ny = 0,
-  } = assemblyComponents;
+  } = assemblyComponents || {};
+  const ns = rawNs > 0 ? rawNs : (spotFromPl.spotCount || 0);
 
-  const tier = isOver100 ? 'Over 100 CCT' : 'Under 99 CCT';
+  // 2) Rate standar per sub-step (basis tunggal sec/unit(pcs), tanpa pembagian lot)
+  const rateScanStart = getP('as_scan_start', 10.0);
+  const rateWireTransport = getP('as_tr_in', 30.0);
+  const rateUntangle = getP('as_untangle', 2.0);
+
+  // Setting Wires on Board berbasis total panjang COT (mm) × 0.22 dtk/mm × faktor kepadatan sirkuit PPCS
+  const rateSetPerMm = getP('as_set_mm', 0.22);
+  const cctDensityFactor = 1 + (totalCctPpcs / 1000) * 0.25;
+  const settingWireRate = totalCotLengthMm > 0 ? rateSetPerMm * cctDensityFactor : 0;
+  const settingWireSec = totalCotLengthMm * settingWireRate;
+
+  // Hindari double-counting panjang COT: taping non-COT hanya menghitung baris bertipe 'T'
+  const nonCotTapingTl = dwg
+    .filter((r) => r.type === 'T')
+    .reduce((a, b) => a + (Number(b.tl) || 0) * (b.qty !== undefined && b.qty > 0 ? b.qty : 1), 0);
+  const rateNonCotTap = getP('as_tap_non_cot', 0.065628357);
+
+  // Taping COT Master_COT_V2 (Taping Pre-COT, Pemasangan Selang COT terpisah, Tutup Ujung & Branch, Taping Post-COT)
+  const avgPreRate = totalCotQty > 0 ? cotV2.totalPreSec / totalCotQty : 0;
+  const avgCotInsertRate = totalCotQty > 0 ? totalCotInsertSec / totalCotQty : 0;
+  const avgUjungRate = totalCotQty > 0 ? cotV2.totalUjungSec / totalCotQty : 0;
+  const avgPostRate = totalCotQty > 0 ? cotV2.totalPostSec / totalCotQty : 0;
+
+  const measuringQty = Math.ceil(totalTarikanCot * 1.15);
+  const rateMeasuring = getP('as_mea', 9.24);
+
+  const rateMarker = getP('as_mrk', 7.28);
+  const rateSpot = getP('as_spt', 10.61);
+  const rateClip = getP('as_clp', 9.9);
+  const rateClamp = getP('as_clm', 29.11);
+  const rateNameplate = getP('as_nmp', 20.0);
+  const rateBarcode = getP('as_bar', 166.0);
+
+  const rateRemove = getP('as_rem', 1.23);
+  const rateScanEnd = getP('as_scan_end', 5.0);
+  const rateTransportOut = getP('as_tr_out', 40.0);
+
+  // 3) Susun sub-step secara kronologis dari awal sampai akhir (seluruhnya sec/unit(pcs))
+  const cotInsertLabel =
+    totalCotQty > 0
+      ? 'Pemasangan Selang COT (COT-B: ' + cotBQty + ' pcs, H-COT: ' + hCotQty + ' pcs)'
+      : 'Pemasangan Selang COT (COT-B & H-COT)';
+
   const subSteps = [
-    mkSub('General', 'Scan the barcode', 'sec/lot -> sec/unit(pcs)', 1, getP('as_scan'), getP('as_scan') / lot),
-    mkSub('General', 'Wire transport', 'sec/unit(pcs)', 1, getP('as_tr_in'), getP('as_tr_in')),
-    mkSub(tier, 'Setting wires on board (per dim point)', 'sec/unit(pcs)', dimPoints, isOver100 ? getP('as_set_o100') : getP('as_set_u99'), dimPoints * (isOver100 ? getP('as_set_o100') : getP('as_set_u99'))),
-    mkSub(tier, 'Taping the wires (per mm non-B)', 'sec/unit(pcs)', tapingTl, isOver100 ? getP('as_tap_o100') : getP('as_tap_u99'), tapingTl * (isOver100 ? getP('as_tap_o100') : getP('as_tap_u99'))),
-    mkSub(tier, 'Taping COT (per C)', 'sec/unit(pcs)', cotCount, isOver100 ? getP('as_cot_o100') : getP('as_cot_u99'), cotCount * (isOver100 ? getP('as_cot_o100') : getP('as_cot_u99'))),
-    mkSub(tier, 'Measuring wire length (per dim point)', 'sec/unit(pcs)', dimPoints, isOver100 ? getP('as_mea_o100') : getP('as_mea_u99'), dimPoints * (isOver100 ? getP('as_mea_o100') : getP('as_mea_u99'))),
-    mkSub('Accessories', 'Markers, Spot Tape, Clips, Clamps & Nameplates', 'sec/unit(pcs)', nm + ns + nx + ny + nn, 0, nm * getP('as_mrk') + ns * (isOver100 ? getP('as_spt_o100') : getP('as_spt_u99')) + nx * getP('as_clp') + ny * getP('as_clm') + nn * getP('as_nmp')),
-    mkSub(tier, 'Attaching barcodes & removing harness from board', 'sec/unit(pcs)', dimPoints, isOver100 ? getP('as_rem_o100') : getP('as_rem_u99'), (isOver100 ? getP('as_bar_o100') : 0) + dimPoints * (isOver100 ? getP('as_rem_o100') : getP('as_rem_u99'))),
-    mkSub('General', 'Transporting the harness', 'sec/lot -> sec/unit(pcs)', 1, getP('as_tr_out'), getP('as_tr_out') / lot),
+    mkSub('Persiapan', 'Scan Barcode Awal', 'sec/unit(pcs)', 1, rateScanStart, 1 * rateScanStart),
+    mkSub('Persiapan', 'Wire Transport (bawa gulungan ke jig)', 'sec/unit(pcs)', 1, rateWireTransport, 1 * rateWireTransport),
+    mkSub('Persiapan', 'Urai Gulungan Wire Panjang (>2500 mm)', 'sec/unit(pcs)', untangleWireQty, rateUntangle, untangleWireQty * rateUntangle),
+    mkSub('Setting Wire', 'Setting Wires on Board (COT mm × ' + rateSetPerMm.toFixed(2) + ' × DF ' + cctDensityFactor.toFixed(3) + ')', 'sec/unit(pcs)', totalCotLengthMm, settingWireRate, settingWireSec),
+    mkSub('Taping Non-COT', 'Taping Wire Non-COT (per mm)', 'sec/unit(pcs)', nonCotTapingTl, rateNonCotTap, nonCotTapingTl * rateNonCotTap),
+    mkSub('Master_COT_V2', 'Taping Pre-COT (Full/Half 25mm/Spot 150mm + 3.5s, per DIA)', 'sec/unit(pcs)', totalCotQty, avgPreRate, cotV2.totalPreSec),
+    mkSub('Pemasangan COT', cotInsertLabel, 'sec/unit(pcs)', totalCotQty, avgCotInsertRate, totalCotInsertSec),
+    mkSub('Master_COT_V2', 'Tutup Ujung & Taping Branch / Persimpangan COT (Multi-Branch D7–D36)', 'sec/unit(pcs)', totalCotQty, avgUjungRate, cotV2.totalUjungSec),
+    mkSub('Master_COT_V2', 'Taping Post-COT (Full/Half 25mm/Spot 150mm + 3.5s, per DIA)', 'sec/unit(pcs)', totalCotQty, avgPostRate, cotV2.totalPostSec),
+    mkSub('Measuring', 'Measuring dimensi panjang branch (+15% non-COT)', 'sec/unit(pcs)', measuringQty, rateMeasuring, measuringQty * rateMeasuring),
+    mkSub('Accessories', 'Attaching Markers (nm)', 'sec/unit(pcs)', nm, rateMarker, nm * rateMarker),
+    mkSub('Accessories', 'Attaching Spot Tape Tambahan (ns)', 'sec/unit(pcs)', ns, rateSpot, ns * rateSpot),
+    mkSub('Accessories', 'Attaching Clips (nx)', 'sec/unit(pcs)', nx, rateClip, nx * rateClip),
+    mkSub('Accessories', 'Attaching Clamps (ny)', 'sec/unit(pcs)', ny, rateClamp, ny * rateClamp),
+    mkSub('Accessories', 'Attaching Nameplates (nn)', 'sec/unit(pcs)', nn, rateNameplate, nn * rateNameplate),
+    mkSub('Accessories', 'Attaching Barcode Harness', 'sec/unit(pcs)', 1, rateBarcode, 1 * rateBarcode),
+    mkSub('Finishing', 'Removing Harness from Board', 'sec/unit(pcs)', totalCotQty, rateRemove, totalCotQty * rateRemove),
+    mkSub('Finishing', 'Scan Barcode Akhir', 'sec/unit(pcs)', 1, rateScanEnd, 1 * rateScanEnd),
+    mkSub('Finishing', 'Transport the Harness', 'sec/unit(pcs)', 1, rateTransportOut, 1 * rateTransportOut),
   ];
 
+  // 4) Sinkronisasi Subtotal = SUM langsung seluruh baris sub-step Assembly
   const baseSec = subSteps.reduce((s, x) => s + x.baseSec, 0);
+  const summaryNote =
+    'COT: ' +
+    totalCotLengthMm.toFixed(0) +
+    ' mm (' +
+    totalCotQty +
+    ' pcs: B=' +
+    cotBQty +
+    ', H=' +
+    hCotQty +
+    ') | PPCS: ' +
+    totalCctPpcs +
+    ' CCT (DF ×' +
+    cctDensityFactor.toFixed(3) +
+    ') | Taping COT: ' +
+    cotV2.totalSec.toFixed(1) +
+    's + Pasang: ' +
+    totalCotInsertSec.toFixed(1) +
+    's | Meas: ' +
+    measuringQty;
+
   return {
     active: baseSec > 0,
-    summaryNote: 'Dim: ' + dimPoints + ' | Taping: ' + tapingTl + 'mm | COT: ' + cotCount,
+    summaryNote,
     subSteps,
     baseSec,
   };
@@ -1010,3 +1116,29 @@ export const DEFAULT_PROCESS_DISCS: ProcessLogicDisc[] = [
     updatedAt: NOW_ISO,
   },
 ];
+
+/**
+ * Upgrade otomatis built-in Process #17 (Assembly) dari versi lama (v1.0.0 .. v3.2.0)
+ * ke v4.0.0 (Setting Wires berbasis panjang COT mm × 0.22 × cctDensityFactor PPCS,
+ * dan sub-step terpisah Pemasangan Selang COT-B & H-COT)
+ * bagi user yang sudah memiliki konfigurasi tersimpan di localStorage maupun Firestore.
+ */
+export function upgradeBuiltinProcessDiscs(discs: ProcessLogicDisc[]): ProcessLogicDisc[] {
+  const defaultAssembly = DEFAULT_PROCESS_DISCS.find((d) => d.processId === 17);
+  if (!defaultAssembly) return discs;
+
+  const legacyVersions = new Set(['1.0.0', '2.0.0', '2.1.0', '3.0.0', '3.1.0', '3.2.0']);
+
+  return discs.map((disc) => {
+    if (
+      disc.processId === 17 &&
+      !disc.isCustomProcess &&
+      (legacyVersions.has(disc.version) ||
+        !disc.code.includes('as_set_mm') ||
+        !disc.code.includes('as_cot_ins_b_base'))
+    ) {
+      return structuredClone(defaultAssembly);
+    }
+    return disc;
+  });
+}

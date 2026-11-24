@@ -78,6 +78,14 @@
           "type": "object",
           "description": "Manual-(Air)cutting 2D matrix stored as row-keyed numeric arrays."
         },
+        "cotMatrixMap": {
+          "type": "object",
+          "description": "COT taping V2 2D factor matrix (Master_COT_V2, D7..D36) stored as row-keyed numeric arrays."
+        },
+        "settingWireMatrixMap": {
+          "type": "object",
+          "description": "Setting Wires on Board auto-lookup matrix (T1..T7 base rates per CCT PPCS) stored as row-keyed numeric arrays."
+        },
         "processDiscs": {
           "type": "array",
           "description": "Modular sub-process Logic Disc definitions (max 100)."

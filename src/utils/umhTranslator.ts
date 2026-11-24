@@ -138,9 +138,14 @@ const STAGE_LABELS: Record<string, Record<UiLang, string>> = {
   'Main Housing': { id: 'Proses Utama Housing', en: 'Main Housing', jp: '本作業（ハウジング）' },
   'Post-Housing': { id: 'Pasca-Housing', en: 'Post-Housing', jp: 'ハウジング後作業' },
   General: { id: 'Umum', en: 'General', jp: '一般作業' },
+  Persiapan: { id: 'Persiapan', en: 'Preparation', jp: '段取り・準備' },
+  'Setting Wire': { id: 'Setting Wire', en: 'Setting Wire', jp: '電線布線' },
+  'Taping Non-COT': { id: 'Taping Non-COT', en: 'Non-COT Taping', jp: '非COTテープ巻き' },
+  Finishing: { id: 'Penyelesaian', en: 'Finishing', jp: '仕上げ・後作業' },
   'Under 99 CCT': { id: 'Di Bawah 99 CCT', en: 'Under 99 CCT', jp: '99CCT以下' },
   'Over 100 CCT': { id: '100 CCT ke Atas', en: 'Over 100 CCT', jp: '100CCT以上' },
   Accessories: { id: 'Aksesoris', en: 'Accessories', jp: '副資材取付' },
+  Master_COT_V2: { id: 'Taping COT (Master_COT_V2)', en: 'COT Taping (Master_COT_V2)', jp: 'COTテープ巻き (Master_COT_V2)' },
   Inspection: { id: 'Inspeksi', en: 'Inspection', jp: '検査' },
   Main: { id: 'Proses Utama', en: 'Main', jp: '本作業' },
 };
@@ -481,6 +486,31 @@ const SUBSTEP_EXACT: Record<string, Record<UiLang, string>> = {
     en: 'Making, organizing & tidying wire bundles',
     jp: '電線束の整線・整理',
   },
+  'Scan Barcode Awal': {
+    id: 'Scan Barcode Awal',
+    en: 'Initial Barcode Scan',
+    jp: '開始バーコードスキャン',
+  },
+  'Wire Transport (bawa gulungan ke jig)': {
+    id: 'Wire Transport (bawa gulungan ke jig)',
+    en: 'Wire Transport (bring wire coils to jig)',
+    jp: '電線搬送（治具板付近へ運搬）',
+  },
+  'Wire Transport (Bawa gulungan wire ke dekat jig)': {
+    id: 'Wire Transport (Bawa gulungan wire ke dekat jig)',
+    en: 'Wire Transport (Bring wire coils to jig)',
+    jp: '電線搬送（治具板付近へ運搬）',
+  },
+  'Urai Gulungan Wire Panjang (>2500 mm)': {
+    id: 'Urai Gulungan Wire Panjang (>2500 mm)',
+    en: 'Untangle Long Wires (>2500 mm)',
+    jp: '長尺電線ほぐし（>2500 mm）',
+  },
+  'Urai Gulungan Wire Panjang (Untangle Wire > 2500 mm)': {
+    id: 'Urai Gulungan Wire Panjang (Untangle Wire > 2500 mm)',
+    en: 'Untangle Long Wires (> 2500 mm)',
+    jp: '長尺電線ほぐし（> 2500 mm）',
+  },
   'Wire transport': {
     id: 'Transportasi kabel ke jig board',
     en: 'Wire transport',
@@ -491,25 +521,125 @@ const SUBSTEP_EXACT: Record<string, Record<UiLang, string>> = {
     en: 'Setting wires on board (per dim point)',
     jp: '治具板への電線布線（寸法点別）',
   },
+  'Taping Wire Non-COT (per mm)': {
+    id: 'Taping Wire Non-COT (per mm)',
+    en: 'Non-COT Wire Taping (per mm)',
+    jp: '非COT部電線テープ巻き（mm別）',
+  },
   'Taping the wires (per mm non-B)': {
     id: 'Taping kabel (per mm non-Bare)',
     en: 'Taping the wires (per mm non-B)',
     jp: 'テープ巻き作業（非B部のmm別）',
+  },
+  'Taping the wires (per mm non-COT)': {
+    id: 'Taping kabel non-COT (per mm)',
+    en: 'Taping the wires (per mm non-COT)',
+    jp: '非COT部テープ巻き作業（mm別）',
   },
   'Taping COT (per C)': {
     id: 'Pemasangan & taping Corrugated Tube / COT (per C)',
     en: 'Taping COT (per C)',
     jp: 'コルゲートチューブ（COT）巻き（C別）',
   },
+  'Pasang & Taping Pre-COT (Full/Half 25mm/Spot 150mm + 3.5s, per DIA)': {
+    id: 'Pasang & Taping Pre-COT (Full/Half 25mm/Spot 150mm + 3.5s, per DIA)',
+    en: 'Pre-COT Install & Taping (Avg Full/Half 25mm/Spot 150mm + 3.5s, per DIA)',
+    jp: 'Pre-COT取付・テープ巻き（Full/Half/Spot平均+3.5秒、DIA別）',
+  },
+  'Tutup Ujung & Taping Branch / Persimpangan COT (Multi-Branch D7–D36)': {
+    id: 'Tutup Ujung & Taping Branch / Persimpangan COT (Multi-Branch D7–D36)',
+    en: 'COT End Sealing & Multi-Branch Taping (D7–D36)',
+    jp: 'COT端部・分岐止めテープ巻き（Multi-Branch D7–D36）',
+  },
+  'Taping Post-COT (Full/Half 25mm/Spot 150mm + 3.5s, per DIA)': {
+    id: 'Taping Post-COT (Full/Half 25mm/Spot 150mm + 3.5s, per DIA)',
+    en: 'Post-COT Taping (Avg Full/Half 25mm/Spot 150mm + 3.5s, per DIA)',
+    jp: 'Post-COTテープ巻き（Full/Half/Spot平均+3.5秒、DIA別）',
+  },
+  'COT Taping V2 — Pre-COT (Avg Full/Half/Spot)': {
+    id: 'Taping Pre-COT (Rata-rata Full / Half 25mm / Spot 150mm)',
+    en: 'COT Taping V2 — Pre-COT (Avg Full/Half/Spot)',
+    jp: 'Pre-COTテープ巻き（Full/Half/Spot平均）',
+  },
+  'COT Taping V2 — Tutup Ujung 2 Sisi (Kiri & Kanan)': {
+    id: 'Taping Tutup Ujung COT 2 Sisi (Kiri & Kanan)',
+    en: 'COT Taping V2 — Both Ends Sealing (Left & Right)',
+    jp: 'COT両端止めテープ巻き（左右2箇所）',
+  },
+  'COT Taping V2 — Tutup Ujung Multi-Branch': {
+    id: 'Taping Tutup Ujung Multi-Branch (Master_COT_V2)',
+    en: 'COT Taping V2 — Multi-Branch End Sealing',
+    jp: 'COT端部・分岐止めテープ巻き（Multi-Branch）',
+  },
+  'COT Taping V2 — Post-COT (Avg Full/Half/Spot)': {
+    id: 'Taping Post-COT (Rata-rata Full / Half 25mm / Spot 150mm)',
+    en: 'COT Taping V2 — Post-COT (Avg Full/Half/Spot)',
+    jp: 'Post-COTテープ巻き（Full/Half/Spot平均）',
+  },
+  'Measuring dimensi panjang branch (+15% non-COT)': {
+    id: 'Measuring dimensi panjang branch (+15% non-COT)',
+    en: 'Measuring Branch Length (+15% Non-COT)',
+    jp: '分岐寸法長測定（非COT +15%補正）',
+  },
+  'Measuring (Pengukuran Dimensi Panjang Branch +15%)': {
+    id: 'Measuring (Pengukuran Dimensi Panjang Branch +15%)',
+    en: 'Measuring Branch Length (+15% Non-COT)',
+    jp: '分岐寸法長測定（非COT +15%補正）',
+  },
   'Measuring wire length (per dim point)': {
     id: 'Pengukuran panjang cabang harness (per titik dimensi)',
     en: 'Measuring wire length (per dim point)',
     jp: '製品長測定（寸法点別）',
   },
+  'Attaching Markers (nm)': {
+    id: 'Attaching Markers (nm)',
+    en: 'Attaching Markers (nm)',
+    jp: 'マーカー取付（nm）',
+  },
+  'Attaching Spot Tape Tambahan (ns)': {
+    id: 'Attaching Spot Tape Tambahan (ns)',
+    en: 'Attaching Additional Spot Tape (ns)',
+    jp: '追加スポットテープ貼付（ns）',
+  },
+  'Attaching Clips (nx)': {
+    id: 'Attaching Clips (nx)',
+    en: 'Attaching Clips (nx)',
+    jp: 'クリップ取付（nx）',
+  },
+  'Attaching Clamps (ny)': {
+    id: 'Attaching Clamps (ny)',
+    en: 'Attaching Clamps (ny)',
+    jp: 'クランプ取付（ny）',
+  },
+  'Attaching Nameplates (nn)': {
+    id: 'Attaching Nameplates (nn)',
+    en: 'Attaching Nameplates (nn)',
+    jp: '銘板・ネームプレート取付（nn）',
+  },
+  'Attaching Barcode Harness': {
+    id: 'Attaching Barcode Harness',
+    en: 'Attaching Harness Barcode',
+    jp: 'ハーネスバーコード貼付',
+  },
   'Markers, Spot Tape, Clips, Clamps & Nameplates': {
     id: 'Pasang Marker, Spot Tape, Clip, Clamp & Nameplate',
     en: 'Markers, Spot Tape, Clips, Clamps & Nameplates',
     jp: 'マーカー・スポットテープ・クリップ・クランプ・銘板取付',
+  },
+  'Removing Harness from Board': {
+    id: 'Removing Harness from Board',
+    en: 'Removing Harness from Board',
+    jp: '治具板からのハーネス取外し',
+  },
+  'Scan Barcode Akhir': {
+    id: 'Scan Barcode Akhir',
+    en: 'Final Barcode Scan',
+    jp: '終了バーコードスキャン',
+  },
+  'Transport the Harness': {
+    id: 'Transport the Harness (1 pcs)',
+    en: 'Transport the Harness',
+    jp: '完成ハーネス搬送',
   },
   'Attaching barcodes & removing harness from board': {
     id: 'Tempel barcode & lepas harness dari board',
@@ -602,6 +732,13 @@ export function translateSubStepName(name: string, lang: UiLang): string {
     if (lang === 'id') return `Potong manual kabel besar/shield (${cleanRange})`;
     if (lang === 'en') return `Manual cutting (${cleanRange})`;
     return `手動切断（${cleanRange}）`;
+  }
+
+  const mSettingBoard = name.match(/^Setting Wires on Board \((.+)\)$/);
+  if (mSettingBoard) {
+    if (lang === 'id') return `Setting Wires on Board (${mSettingBoard[1]})`;
+    if (lang === 'en') return `Setting Wires on Board (${mSettingBoard[1]})`;
+    return `治具板への電線布線（${mSettingBoard[1]}）`;
   }
 
   return name;

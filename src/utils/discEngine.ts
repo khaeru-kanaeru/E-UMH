@@ -1,9 +1,26 @@
 import {
+  CotCalcOptions,
+  CotMasterFactorV2,
+  CotTapingV2Summary,
+  MATRIX_SETTING_WIRE_CCT,
+  SettingWireCctTier,
+  calculateCotTapingV2Summary,
+  cotMatrixToFactors,
+  resolveSettingWireRate,
+  settingWireMatrixToRates,
+  upgradeSettingWireMatrix,
+} from '../data/cotMasterV2';
+import {
   DEFAULT_PROCESS_DISCS,
   createEmptyDiscTemplateCode,
 } from '../data/defaultProcessDiscs';
 import { SAMPLE_KHR_PAYLOAD } from '../data/defaultStdDb';
 import {
+  SpotTapeCalculationSummary,
+  calculateSpotTapeFromPartList,
+} from './spotTapeCalculator';
+import {
+  AssemblyCotItem,
   AssyInputPayload,
   AutoCutItem,
   DiscSubStepOutput,
@@ -11,6 +28,7 @@ import {
   DiscValidationResult,
   FeederItem,
   LotMetrics,
+  PartListItem,
   PpcsWireItem,
   ProcessLogicDisc,
   StdDatabase,
@@ -55,9 +73,11 @@ export interface ProcessDiscContext {
     acMatrix: number[][];
     saMatrix: number[][];
     mcMatrix: number[][];
+    cotMatrix: number[][];
+    settingWireMatrix: number[][];
   };
   helpers: {
-    getP: (id: string) => number;
+    getP: (id: string, fallback?: number) => number;
     mkSub: (
       stage: string,
       name: string,
@@ -78,6 +98,18 @@ export interface ProcessDiscContext {
     isNonCrimpTerm: (t: string) => boolean;
     JOINT_CODES: string[];
     groupTwistBundles: () => { bundles: number; ccts: number; totalLenM: number };
+    calculateCotTapingV2: (
+      cotList?: AssemblyCotItem[],
+      plList?: PartListItem[],
+      options?: CotCalcOptions
+    ) => CotTapingV2Summary;
+    calculateSpotTapeFromPartList: (plList?: PartListItem[]) => SpotTapeCalculationSummary;
+    resolveSettingWireRate: (
+      totalCctPpcs: number,
+      customRates?: number[]
+    ) => { code: string; label: string; rate: number };
+    MATRIX_SETTING_WIRE_CCT: SettingWireCctTier[];
+    MASTER_COT_V2: CotMasterFactorV2[];
   };
 }
 
@@ -127,7 +159,10 @@ export function buildProcessDiscContext(
   const paramMap = new Map<string, number>();
   stdDb.params.forEach((p) => paramMap.set(p.id, Number(p.val)));
 
-  const getP = (id: string): number => paramMap.get(id) ?? 0;
+  const getP = (id: string, fallback = 0): number => {
+    const val = paramMap.get(id);
+    return val !== undefined && Number.isFinite(val) ? val : fallback;
+  };
 
   const mkSub = (
     stage: string,
@@ -245,6 +280,8 @@ export function buildProcessDiscContext(
       acMatrix: stdDb.acMatrix,
       saMatrix: stdDb.saMatrix,
       mcMatrix: stdDb.mcMatrix,
+      cotMatrix: stdDb.cotMatrix,
+      settingWireMatrix: upgradeSettingWireMatrix(stdDb.settingWireMatrix),
     },
     helpers: {
       getP,
@@ -254,6 +291,20 @@ export function buildProcessDiscContext(
       isNonCrimpTerm,
       JOINT_CODES: [...JOINT_CODES_LIST],
       groupTwistBundles,
+      calculateCotTapingV2: (cotList = dwg, plList = pl, options?: CotCalcOptions) =>
+        calculateCotTapingV2Summary(cotList, plList, stdDb.cotMatrix, options),
+      calculateSpotTapeFromPartList: (plList = pl) =>
+        calculateSpotTapeFromPartList(plList),
+      resolveSettingWireRate: (totalCctPpcs: number, customRates?: number[]) =>
+        resolveSettingWireRate(
+          totalCctPpcs,
+          customRates ?? settingWireMatrixToRates(stdDb.settingWireMatrix)
+        ),
+      MATRIX_SETTING_WIRE_CCT: MATRIX_SETTING_WIRE_CCT.map((t, idx) => ({
+        ...t,
+        rate: settingWireMatrixToRates(stdDb.settingWireMatrix)[idx] ?? t.rate,
+      })),
+      MASTER_COT_V2: cotMatrixToFactors(stdDb.cotMatrix),
     },
   };
 }
@@ -411,11 +462,11 @@ export function serializeDiscToJsFile(disc: ProcessLogicDisc): string {
  *   ctx.assemblyComponents -> { markerQty, spotTapeQty, namePlateQty, clipQty, clampQty }
  *   ctx.partList           -> Array<{ customer, assyNo, partNumber, partName, qty, routingId, desc }>
  *   ctx.ppcsList           -> Array<PpcsWireItem>
- *   ctx.assemblyCotList    -> Array<{ type: 'C'|'T'|'B', tl: number }>
+ *   ctx.assemblyCotList    -> Array<{ type: 'C'|'T'|'B', tl: number, tubeNo?, tubeName?, diaCode?, qty?, unit?, proses?, supply? }>
  *   ctx.terminalRatios     -> Record<string, number>
  *   ctx.autoCutList        -> Array<AutoCutItem>
  *   ctx.feederList         -> Array<FeederItem>
- *   ctx.stdDb              -> { params, acMatrix, saMatrix, mcMatrix }
+ *   ctx.stdDb              -> { params, acMatrix, saMatrix, mcMatrix, cotMatrix }
  *   ctx.helpers            -> {
  *     getP(paramId): number,
  *     mkSub(stage, name, basis, qty, rate, secPerUnit): SubStep,
@@ -423,7 +474,12 @@ export function serializeDiscToJsFile(disc: ProcessLogicDisc): string {
  *     buildCircuitAllocs(): CircuitAlloc[],
  *     isNonCrimpTerm(term): boolean,
  *     JOINT_CODES: string[],
- *     groupTwistBundles(): { bundles, ccts, totalLenM }
+ *     groupTwistBundles(): { bundles, ccts, totalLenM },
+ *     calculateCotTapingV2(cotList?, plList?): CotTapingV2Summary,
+ *     calculateSpotTapeFromPartList(plList?): SpotTapeCalculationSummary,
+ *     resolveSettingWireRate(totalCctPpcs, customRates?): { code, label, rate },
+ *     MATRIX_SETTING_WIRE_CCT: SettingWireCctTier[],
+ *     MASTER_COT_V2: CotMasterFactorV2[]
  *   }
  *
  * OUTPUT calculate(ctx):
