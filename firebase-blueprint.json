@@ -86,6 +86,10 @@
           "type": "object",
           "description": "Setting Wires on Board auto-lookup matrix (T1..T7 base rates per CCT PPCS) stored as row-keyed numeric arrays."
         },
+        "difficultyMatrixMap": {
+          "type": "object",
+          "description": "Manual difficulty rating percentage addition matrix (0.0..5.0 stars) stored as row-keyed numeric arrays."
+        },
         "processDiscs": {
           "type": "array",
           "description": "Modular sub-process Logic Disc definitions (max 100)."

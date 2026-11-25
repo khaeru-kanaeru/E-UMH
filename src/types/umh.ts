@@ -16,6 +16,7 @@ export interface AssyParams {
   masterCct: number;
   pfdAllowancePct: number;
   allowanceMode: AllowanceMode;
+  difficultyRating?: number;
   _recycleBinMeta?: {
     binId: string;
     deletedAt: string;
@@ -125,7 +126,7 @@ export interface StdParamItem {
 }
 
 export interface Matrix2D {
-  id: 'acMatrix' | 'saMatrix' | 'mcMatrix' | 'cotMatrix' | 'settingWireMatrix';
+  id: 'acMatrix' | 'saMatrix' | 'mcMatrix' | 'cotMatrix' | 'settingWireMatrix' | 'difficultyMatrix';
   title: string;
   rowLabel: string;
   colLabel: string;
@@ -183,6 +184,7 @@ export interface StdDatabase {
   mcMatrix: number[][];
   cotMatrix: number[][];
   settingWireMatrix: number[][];
+  difficultyMatrix: number[][];
   processDiscs?: ProcessLogicDisc[];
 }
 
@@ -235,6 +237,8 @@ export interface CalculationResult {
   processes: ProcessResult[];
   twistBundlesCount: number;
   autoCutCandidateTerminals: { partNo: string; count: number }[];
+  difficultyRating?: number;
+  difficultyPct?: number;
   smv?: CalculationVariant;
 }
 

@@ -7,8 +7,10 @@ import {
   FileSpreadsheet,
   Languages,
   Printer,
+  Star,
   X,
 } from 'lucide-react';
+import { resolveDifficultyPercentage } from '../data/cotMasterV2';
 import {
   buildExportRecordForMode,
   getAllowSecForMode,
@@ -28,6 +30,7 @@ import {
 
 interface AssyDetailModalProps {
   record: AssyRecord;
+  difficultyMatrix?: number[][];
   onClose: () => void;
   onEdit: (record: AssyRecord) => void;
   onPrintPdf: (record: AssyRecord, mode: AllowanceMode, lang: UiLang) => void;
@@ -152,6 +155,7 @@ const MODAL_LABELS: Record<
 
 export function AssyDetailModal({
   record,
+  difficultyMatrix,
   onClose,
   onEdit,
   onPrintPdf,
@@ -171,6 +175,11 @@ export function AssyDetailModal({
 
   const { params } = record;
   const effectiveLot = getEffectiveLot(params.lot);
+  const difficultyRating = params.difficultyRating ?? 0;
+  const difficultyPct =
+    record.calculation.difficultyPct !== undefined
+      ? record.calculation.difficultyPct
+      : resolveDifficultyPercentage(difficultyRating, difficultyMatrix);
   const variantCalc = getVariantResult(record, activeVariant);
   const { totalBaseSec, totalAllowByProcessSec, totalAllowByFinalSec, processes } = variantCalc;
 
@@ -277,7 +286,7 @@ export function AssyDetailModal({
         {/* Tier 1: Modal Title & Document Actions */}
         <div className="px-6 py-3.5 border-b border-slate-200 bg-white flex flex-col sm:flex-row sm:items-center justify-between gap-3 shrink-0">
           <div className="min-w-0">
-            <div className="flex items-center gap-2 text-xs text-slate-500">
+            <div className="flex flex-wrap items-center gap-2 text-xs text-slate-500">
               <span className="font-semibold text-[#1E3A8A]">{L.subtitle}</span>
               <span aria-hidden="true">·</span>
               <span className="truncate">{params.customer || '-'}</span>
@@ -286,6 +295,25 @@ export function AssyDetailModal({
               <span aria-hidden="true">·</span>
               <span className="font-mono-num whitespace-nowrap">
                 PFD {activeMode === 'none' ? 0 : params.pfdAllowancePct}%
+              </span>
+              <span aria-hidden="true">·</span>
+              <span
+                className={`inline-flex items-center gap-1 px-2 py-0.5 rounded-md border font-mono-num text-[11px] font-semibold whitespace-nowrap ${
+                  difficultyRating > 0
+                    ? 'bg-amber-50 border-amber-200 text-amber-800'
+                    : 'bg-slate-50 border-slate-200 text-slate-600'
+                }`}
+              >
+                <Star
+                  className={`w-3 h-3 ${
+                    difficultyRating > 0
+                      ? 'fill-amber-400 text-amber-500'
+                      : 'text-slate-400'
+                  }`}
+                />
+                <span>
+                  Kesulitan: {difficultyRating.toFixed(1)} ★ (+{difficultyPct.toFixed(2)}%)
+                </span>
               </span>
             </div>
             <h2 className="text-lg sm:text-xl font-bold text-slate-900 font-mono-num mt-0.5 truncate">

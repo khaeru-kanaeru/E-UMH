@@ -475,26 +475,35 @@ export function StdBulkEditModal({
                                   isChanged ? 'bg-blue-50/70' : ''
                                 }`}
                               >
-                                <input
-                                  type="number"
-                                  step="any"
-                                  value={currVal}
-                                  title={isChanged ? `Sebelumnya: ${origVal}` : undefined}
-                                  onChange={(e) =>
-                                    handleMatrixCellChange(selectedMatrix, ri, ci, e.target.value)
-                                  }
-                                  className={`${
-                                    selectedMatrix === 'settingWireMatrix'
-                                      ? 'w-28'
-                                      : selectedMatrix === 'cotMatrix'
-                                      ? 'w-24'
-                                      : 'w-20'
-                                  } text-center font-mono-num text-xs font-semibold px-2 py-1.5 rounded-lg border focus:outline-none focus:ring-2 focus:ring-[#1E3A8A]/20 ${
-                                    isChanged
-                                      ? 'bg-white border-[#1E3A8A] text-[#1E3A8A]'
-                                      : 'bg-slate-50 border-slate-200 text-slate-900 focus:bg-white focus:border-[#1E3A8A]'
-                                  }`}
-                                />
+                                <div className="inline-flex items-center justify-center gap-1">
+                                  <input
+                                    type="number"
+                                    step={selectedMatrix === 'difficultyMatrix' ? '0.01' : 'any'}
+                                    min="0"
+                                    value={currVal}
+                                    title={isChanged ? `Sebelumnya: ${origVal}` : undefined}
+                                    onChange={(e) =>
+                                      handleMatrixCellChange(selectedMatrix, ri, ci, e.target.value)
+                                    }
+                                    className={`${
+                                      selectedMatrix === 'settingWireMatrix' ||
+                                      selectedMatrix === 'difficultyMatrix'
+                                        ? 'w-28'
+                                        : selectedMatrix === 'cotMatrix'
+                                        ? 'w-24'
+                                        : 'w-20'
+                                    } text-center font-mono-num text-xs font-semibold px-2 py-1.5 rounded-lg border focus:outline-none focus:ring-2 focus:ring-[#1E3A8A]/20 ${
+                                      isChanged
+                                        ? 'bg-white border-[#1E3A8A] text-[#1E3A8A]'
+                                        : 'bg-slate-50 border-slate-200 text-slate-900 focus:bg-white focus:border-[#1E3A8A]'
+                                    }`}
+                                  />
+                                  {selectedMatrix === 'difficultyMatrix' && (
+                                    <span className="text-xs font-mono-num font-semibold text-slate-500">
+                                      %
+                                    </span>
+                                  )}
+                                </div>
                               </td>
                             );
                           })}

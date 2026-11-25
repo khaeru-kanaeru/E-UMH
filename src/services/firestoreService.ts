@@ -14,7 +14,7 @@ import {
   where,
   writeBatch,
 } from 'firebase/firestore';
-import { upgradeLegacyCotMatrix, upgradeSettingWireMatrix } from '../data/cotMasterV2';
+import { upgradeLegacyCotMatrix, upgradeSettingWireMatrix, upgradeDifficultyMatrix } from '../data/cotMasterV2';
 import { upgradeBuiltinProcessDiscs } from '../data/defaultProcessDiscs';
 import { upgradeAssemblyStdParams } from '../data/defaultStdDb';
 import { getAllowSecForMode } from '../engine/umhCalculator';
@@ -450,25 +450,37 @@ export async function initializeCloudWorkspace(
         ...bodyWithCot,
         settingWireMatrixMap: matrixToMap(localState.stdDb.settingWireMatrix),
       };
+      const bodyDifficulty = {
+        ...fullMaster,
+        difficultyMatrixMap: matrixToMap(localState.stdDb.difficultyMatrix),
+      };
       try {
-        await setDoc(masterRef, fullMaster);
+        await setDoc(masterRef, bodyDifficulty);
       } catch (innerErr) {
         if (isPermissionDeniedError(innerErr)) {
           try {
-            await setDoc(masterRef, bodyWithCot);
-          } catch (innerErr2) {
-            if (isPermissionDeniedError(innerErr2)) {
+            await setDoc(masterRef, fullMaster);
+          } catch (innerErr0) {
+            if (isPermissionDeniedError(innerErr0)) {
               try {
-                await setDoc(masterRef, bodyWithDiscs);
-              } catch (innerErr3) {
-                if (isPermissionDeniedError(innerErr3)) {
-                  await setDoc(masterRef, baseMaster);
+                await setDoc(masterRef, bodyWithCot);
+              } catch (innerErr2) {
+                if (isPermissionDeniedError(innerErr2)) {
+                  try {
+                    await setDoc(masterRef, bodyWithDiscs);
+                  } catch (innerErr3) {
+                    if (isPermissionDeniedError(innerErr3)) {
+                      await setDoc(masterRef, baseMaster);
+                    } else {
+                      throw innerErr3;
+                    }
+                  }
                 } else {
-                  throw innerErr3;
+                  throw innerErr2;
                 }
               }
             } else {
-              throw innerErr2;
+              throw innerErr0;
             }
           }
         } else {
@@ -681,6 +693,9 @@ export function subscribeMasterConfig(
           settingWireMatrix: upgradeSettingWireMatrix(
             mapToMatrix(d.settingWireMatrixMap, fallbackStd.settingWireMatrix)
           ),
+          difficultyMatrix: upgradeDifficultyMatrix(
+            mapToMatrix(d.difficultyMatrixMap, fallbackStd.difficultyMatrix)
+          ),
           processDiscs:
             Array.isArray(d.processDiscs) && d.processDiscs.length > 0
               ? upgradeBuiltinProcessDiscs(d.processDiscs as ProcessLogicDisc[])
@@ -733,30 +748,42 @@ export function saveMasterConfigToCloud(
     ...bodyWithCot,
     settingWireMatrixMap: matrixToMap(stdDb.settingWireMatrix),
   };
+  const bodyDifficulty = {
+    ...bodyFull,
+    difficultyMatrixMap: matrixToMap(stdDb.difficultyMatrix),
+  };
 
   const runWrite = async () => {
     try {
       const snap = await getDoc(ref);
       if (snap.exists()) {
         try {
-          await updateDoc(ref, bodyFull);
+          await updateDoc(ref, bodyDifficulty);
         } catch (innerErr) {
           if (isPermissionDeniedError(innerErr)) {
             try {
-              await updateDoc(ref, bodyWithCot);
-            } catch (innerErr2) {
-              if (isPermissionDeniedError(innerErr2)) {
+              await updateDoc(ref, bodyFull);
+            } catch (innerErr0) {
+              if (isPermissionDeniedError(innerErr0)) {
                 try {
-                  await updateDoc(ref, bodyWithDiscs);
-                } catch (innerErr3) {
-                  if (isPermissionDeniedError(innerErr3)) {
-                    await updateDoc(ref, baseBody);
+                  await updateDoc(ref, bodyWithCot);
+                } catch (innerErr2) {
+                  if (isPermissionDeniedError(innerErr2)) {
+                    try {
+                      await updateDoc(ref, bodyWithDiscs);
+                    } catch (innerErr3) {
+                      if (isPermissionDeniedError(innerErr3)) {
+                        await updateDoc(ref, baseBody);
+                      } else {
+                        throw innerErr3;
+                      }
+                    }
                   } else {
-                    throw innerErr3;
+                    throw innerErr2;
                   }
                 }
               } else {
-                throw innerErr2;
+                throw innerErr0;
               }
             }
           } else {
@@ -767,7 +794,7 @@ export function saveMasterConfigToCloud(
         try {
           await setDoc(ref, {
             ownerId: uid,
-            ...bodyFull,
+            ...bodyDifficulty,
             createdAt: serverTimestamp(),
           });
         } catch (innerErr) {
@@ -775,30 +802,42 @@ export function saveMasterConfigToCloud(
             try {
               await setDoc(ref, {
                 ownerId: uid,
-                ...bodyWithCot,
+                ...bodyFull,
                 createdAt: serverTimestamp(),
               });
-            } catch (innerErr2) {
-              if (isPermissionDeniedError(innerErr2)) {
+            } catch (innerErr0) {
+              if (isPermissionDeniedError(innerErr0)) {
                 try {
                   await setDoc(ref, {
                     ownerId: uid,
-                    ...bodyWithDiscs,
+                    ...bodyWithCot,
                     createdAt: serverTimestamp(),
                   });
-                } catch (innerErr3) {
-                  if (isPermissionDeniedError(innerErr3)) {
-                    await setDoc(ref, {
-                      ownerId: uid,
-                      ...baseBody,
-                      createdAt: serverTimestamp(),
-                    });
+                } catch (innerErr2) {
+                  if (isPermissionDeniedError(innerErr2)) {
+                    try {
+                      await setDoc(ref, {
+                        ownerId: uid,
+                        ...bodyWithDiscs,
+                        createdAt: serverTimestamp(),
+                      });
+                    } catch (innerErr3) {
+                      if (isPermissionDeniedError(innerErr3)) {
+                        await setDoc(ref, {
+                          ownerId: uid,
+                          ...baseBody,
+                          createdAt: serverTimestamp(),
+                        });
+                      } else {
+                        throw innerErr3;
+                      }
+                    }
                   } else {
-                    throw innerErr3;
+                    throw innerErr2;
                   }
                 }
               } else {
-                throw innerErr2;
+                throw innerErr0;
               }
             }
           } else {

@@ -428,6 +428,9 @@ export function StdParamsView({
       const fracLen = str.includes('.') ? str.split('.')[1].length : 0;
       return val.toFixed(Math.max(2, Math.min(fracLen, 4)));
     }
+    if (key === 'difficultyMatrix') {
+      return `+${val.toFixed(2)}%`;
+    }
     return String(val);
   };
 
@@ -495,7 +498,7 @@ export function StdParamsView({
                 {
                   id: 'download_std_template',
                   label: 'Unduh Template .xlsx',
-                  description: '5 sheet: Sub-Step + 4 Matriks 2D saat ini',
+                  description: `${MATRIX_CONFIGS.length + 1} sheet: Sub-Step + ${MATRIX_CONFIGS.length} Matriks 2D saat ini`,
                   icon: FileSpreadsheet,
                   iconClassName: 'text-[#047857]',
                   onClick: () => exportStdParamsTemplateXlsx(draft),
@@ -842,6 +845,20 @@ export function StdParamsView({
                   </p>
                   <p className="text-slate-500">
                     Matriks ini tetap tersedia jika Anda ingin membuat rumus kustom pada tab <strong>Logic Disc</strong>.
+                  </p>
+                </div>
+              )}
+
+              {selectedMatrix === 'difficultyMatrix' && (
+                <div className="mt-4 rounded-xl bg-amber-50/60 border border-amber-200/80 px-4 py-3 text-[11px] text-slate-700 space-y-1">
+                  <p className="font-semibold text-amber-950">
+                    Rumus Rating Tingkat Kesulitan Manual (0.0 – 5.0 ★, kelipatan 0.5):
+                  </p>
+                  <p className="font-mono-num text-amber-900">
+                    hasilAkhir = hasilDasar × (1 + (Penambahan% / 100)) &nbsp;|&nbsp; Kurva default: 14 × ln(1 + bintang)
+                  </p>
+                  <p className="text-slate-600">
+                    Nilai <strong>0.0 Bintang (0.00%)</strong> tidak mengubah hasil perhitungan sama sekali. Semua nilai persentase pada 11 jenjang di atas dapat disesuaikan melalui tombol <strong>Edit Data</strong> atau <strong>Upload Excel STD</strong>.
                   </p>
                 </div>
               )}

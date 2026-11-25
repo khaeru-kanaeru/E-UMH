@@ -11,6 +11,7 @@ import {
   Upload,
   X,
 } from 'lucide-react';
+import { resolveDifficultyPercentage } from '../data/cotMasterV2';
 import {
   getAllowanceModeLabel,
   getAllowSecForMode,
@@ -371,7 +372,21 @@ export function DatabaseAssyView({
                           {rec.params.assyNo}
                         </td>
                         <td className="py-3 px-4 text-slate-700">
-                          <div className="font-medium text-slate-900">{rec.params.customer || '-'}</div>
+                          <div className="flex flex-wrap items-center gap-1.5">
+                            <span className="font-medium text-slate-900">
+                              {rec.params.customer || '-'}
+                            </span>
+                            {(rec.params.difficultyRating ?? 0) > 0 && (
+                              <span className="inline-flex items-center px-1.5 py-0.5 rounded bg-amber-50 border border-amber-200 text-[10px] font-mono-num font-semibold text-amber-800 whitespace-nowrap">
+                                Kesulitan: {(rec.params.difficultyRating ?? 0).toFixed(1)} ★ (+
+                                {(
+                                  rec.calculation.difficultyPct ??
+                                  resolveDifficultyPercentage(rec.params.difficultyRating ?? 0)
+                                ).toFixed(2)}
+                                %)
+                              </span>
+                            )}
+                          </div>
                           <div className="text-xs text-slate-500">
                             {getAllowanceModeLabel(rec.params.allowanceMode, 'short')}
                             {rec.params.allowanceMode !== 'none' && (

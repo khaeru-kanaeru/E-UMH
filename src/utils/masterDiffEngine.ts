@@ -3,6 +3,7 @@ import {
   STD_COT_ROW_LABELS,
   STD_SETTING_WIRE_COL_LABELS,
   STD_SETTING_WIRE_ROW_LABELS,
+  DIFFICULTY_ROW_LABELS,
 } from '../data/cotMasterV2';
 import {
   AutoCutItem,
@@ -20,6 +21,7 @@ export {
   STD_COT_ROW_LABELS,
   STD_SETTING_WIRE_COL_LABELS,
   STD_SETTING_WIRE_ROW_LABELS,
+  DIFFICULTY_ROW_LABELS,
 };
 
 export type MatrixKey =
@@ -27,7 +29,8 @@ export type MatrixKey =
   | 'saMatrix'
   | 'mcMatrix'
   | 'cotMatrix'
-  | 'settingWireMatrix';
+  | 'settingWireMatrix'
+  | 'difficultyMatrix';
 
 export const STD_COL_LABELS_7 = [
   '0~1000',
@@ -144,6 +147,18 @@ export const MATRIX_CONFIGS: MatrixConfigDef[] = [
     unitLabel: 'dtk / CCT',
     rowLabels: STD_SETTING_WIRE_ROW_LABELS,
     colLabels: STD_SETTING_WIRE_COL_LABELS,
+  },
+  {
+    key: 'difficultyMatrix',
+    name: 'Matriks Kesulitan Manual (Bintang 0.0–5.0)',
+    shortName: 'Difficulty Matrix',
+    sheetName: 'Matriks Kesulitan',
+    title: 'Matriks Penambahan Persentase Kesulitan Berdasarkan Rating Bintang (0.0–5.0 ★)',
+    rowHeaderLabel: 'Rating Bintang',
+    colSuffix: '',
+    unitLabel: 'Penambahan (%)',
+    rowLabels: DIFFICULTY_ROW_LABELS,
+    colLabels: ['Penambahan (%)'],
   },
 ];
 

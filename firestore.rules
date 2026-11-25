@@ -67,6 +67,7 @@ service cloud.firestore {
           'mcMatrixMap',
           'cotMatrixMap',
           'settingWireMatrixMap',
+          'difficultyMatrixMap',
           'processDiscs',
           'autoCutList',
           'feederList',
@@ -82,6 +83,7 @@ service cloud.firestore {
         && data.mcMatrixMap is map
         && (!('cotMatrixMap' in data) || data.cotMatrixMap is map)
         && (!('settingWireMatrixMap' in data) || data.settingWireMatrixMap is map)
+        && (!('difficultyMatrixMap' in data) || data.difficultyMatrixMap is map)
         && (!('processDiscs' in data) || (data.processDiscs is list && data.processDiscs.size() <= 100 && (data.processDiscs.size() == 0 || data.processDiscs[0] is map)))
         && data.autoCutList is list && data.autoCutList.size() <= 2000
         && (data.autoCutList.size() == 0 || data.autoCutList[0] is map)
@@ -269,6 +271,7 @@ service cloud.firestore {
           'mcMatrixMap',
           'cotMatrixMap',
           'settingWireMatrixMap',
+          'difficultyMatrixMap',
           'processDiscs',
           'autoCutList',
           'feederList',

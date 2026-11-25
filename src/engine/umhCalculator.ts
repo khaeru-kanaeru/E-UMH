@@ -1,3 +1,4 @@
+import { resolveDifficultyPercentage } from '../data/cotMasterV2';
 import {
   DEFAULT_PROCESS_DISCS,
   upgradeBuiltinProcessDiscs,
@@ -162,6 +163,20 @@ function executeVariant(
     };
   });
 
+  // --- MANUAL DIFFICULTY RATING SCALING ---
+  const rating = params.difficultyRating ?? 0;
+  const diffPct = resolveDifficultyPercentage(rating, stdDb.difficultyMatrix);
+  const diffMultiplier = 1 + diffPct / 100;
+
+  if (diffMultiplier !== 1) {
+    rawItems.forEach((it) => {
+      it.baseSec *= diffMultiplier;
+      it.subSteps.forEach((st) => {
+        st.baseSec *= diffMultiplier;
+      });
+    });
+  }
+
   // --- DUAL-MODE ALLOWANCE ENGINE ---
   const totalBaseSec = rawItems.reduce((a, b) => a + b.baseSec, 0);
   const rate = (params.pfdAllowancePct || 0) / 100;
@@ -253,6 +268,12 @@ export function calculateUmh(
     true
   );
 
+  const appliedDifficultyRating = payload.params.difficultyRating ?? 0;
+  const appliedDifficultyPct = resolveDifficultyPercentage(
+    appliedDifficultyRating,
+    stdDb.difficultyMatrix
+  );
+
   return {
     lotMetrics,
     totalBaseSec: reg.totalBaseSec,
@@ -261,6 +282,8 @@ export function calculateUmh(
     processes: reg.processes,
     twistBundlesCount: reg.twistBundlesCount,
     autoCutCandidateTerminals: extractAutoCutCandidateTerminals(ppcs),
+    difficultyRating: appliedDifficultyRating,
+    difficultyPct: appliedDifficultyPct,
     smv,
   };
 }

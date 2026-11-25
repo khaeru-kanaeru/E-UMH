@@ -1,5 +1,6 @@
 import { useState } from 'react';
 import { Languages, Printer, X } from 'lucide-react';
+import { resolveDifficultyPercentage } from '../data/cotMasterV2';
 import {
   getAllowSecForMode,
   getEffectiveLot,
@@ -31,6 +32,11 @@ export function PdfReportModal({
   const { params } = record;
   const effectiveLot = getEffectiveLot(params.lot);
   const effPct = mode === 'none' ? 0 : params.pfdAllowancePct || 0;
+  const difficultyRating = params.difficultyRating ?? 0;
+  const difficultyPct =
+    record.calculation.difficultyPct !== undefined
+      ? record.calculation.difficultyPct
+      : resolveDifficultyPercentage(difficultyRating);
 
   const regCalc = getVariantResult(record, 'reg');
   const smvCalc = getVariantResult(record, 'smv');
@@ -82,6 +88,9 @@ export function PdfReportModal({
             </h1>
             <p className="text-xs text-slate-200 mt-1">
               Customer: {params.customer || '-'} · Metode: {modeTitle} · PFD: {effPct}% · LOT: {effectiveLot}
+              {difficultyRating > 0
+                ? ` · Kesulitan: ${difficultyRating.toFixed(1)} ★ (+${difficultyPct.toFixed(2)}%)`
+                : ''}
             </p>
           </div>
           <div className="text-right text-xs text-slate-200 font-mono-num space-y-0.5">

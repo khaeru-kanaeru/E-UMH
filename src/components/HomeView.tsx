@@ -13,6 +13,7 @@ import {
   YAxis,
 } from 'recharts';
 import { ArrowRight, Database, FileSpreadsheet, Layers, Sliders } from 'lucide-react';
+import { resolveDifficultyPercentage } from '../data/cotMasterV2';
 import {
   getAllowanceModeLabel,
   getAllowSecForMode,
@@ -759,9 +760,21 @@ export function HomeView({
               <p className="text-xs font-medium text-slate-500">
                 最新計算結果 · Kalkulasi Terakhir
               </p>
-              <h2 className="text-lg font-bold text-slate-900 mt-0.5 font-mono-num">
-                {latestRecord.params.assyNo} · {latestRecord.params.customer}
-              </h2>
+              <div className="flex flex-wrap items-center gap-2 mt-0.5">
+                <h2 className="text-lg font-bold text-slate-900 font-mono-num">
+                  {latestRecord.params.assyNo} · {latestRecord.params.customer}
+                </h2>
+                {(latestRecord.params.difficultyRating ?? 0) > 0 && (
+                  <span className="inline-flex items-center px-2 py-0.5 rounded-md bg-amber-50 border border-amber-200 text-[11px] font-mono-num font-semibold text-amber-800 whitespace-nowrap">
+                    Kesulitan: {(latestRecord.params.difficultyRating ?? 0).toFixed(1)} ★ (+
+                    {(
+                      latestRecord.calculation.difficultyPct ??
+                      resolveDifficultyPercentage(latestRecord.params.difficultyRating ?? 0)
+                    ).toFixed(2)}
+                    %)
+                  </span>
+                )}
+              </div>
             </div>
             <button
               type="button"

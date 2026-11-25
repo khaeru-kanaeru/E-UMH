@@ -1,4 +1,8 @@
-import { upgradeLegacyCotMatrix, upgradeSettingWireMatrix } from '../data/cotMasterV2';
+import {
+  upgradeDifficultyMatrix,
+  upgradeLegacyCotMatrix,
+  upgradeSettingWireMatrix,
+} from '../data/cotMasterV2';
 import {
   DEFAULT_PROCESS_DISCS,
   upgradeBuiltinProcessDiscs,
@@ -104,6 +108,7 @@ export function loadStdDatabase(): StdDatabase {
       if (!saved.mcMatrix) saved.mcMatrix = structuredClone(DEFAULT_STD_DATABASE.mcMatrix);
       saved.cotMatrix = upgradeLegacyCotMatrix(saved.cotMatrix);
       saved.settingWireMatrix = upgradeSettingWireMatrix(saved.settingWireMatrix);
+      saved.difficultyMatrix = upgradeDifficultyMatrix(saved.difficultyMatrix);
       saved.params = upgradeAssemblyStdParams(saved.params);
       if (!Array.isArray(saved.processDiscs) || saved.processDiscs.length === 0) {
         saved.processDiscs = structuredClone(DEFAULT_PROCESS_DISCS);

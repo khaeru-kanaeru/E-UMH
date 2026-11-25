@@ -11,11 +11,16 @@ import {
   Loader2,
   Sliders,
   Sparkles,
+  Star,
   UploadCloud,
   Wrench,
   X,
 } from 'lucide-react';
-import { calculateCotTapingV2Summary } from '../data/cotMasterV2';
+import {
+  calculateCotTapingV2Summary,
+  DIFFICULTY_ROW_LABELS,
+  resolveDifficultyPercentage,
+} from '../data/cotMasterV2';
 import { SAMPLE_KHR_PAYLOAD } from '../data/defaultStdDb';
 import {
   DEFAULT_LOT_SIZE,
@@ -79,6 +84,7 @@ interface InputWizardModalProps {
   autoCutList: AutoCutItem[];
   feederList: FeederItem[];
   cotMatrix?: number[][];
+  difficultyMatrix?: number[][];
   onClose: () => void;
   onSaveAndCalculate: (payload: AssyInputPayload) => void;
 }
@@ -124,6 +130,7 @@ export function InputWizardModal({
   autoCutList,
   feederList,
   cotMatrix,
+  difficultyMatrix,
   onClose,
   onSaveAndCalculate,
 }: InputWizardModalProps) {
@@ -139,6 +146,15 @@ export function InputWizardModal({
       ? String(initialPayload.params.lot)
       : String(DEFAULT_LOT_SIZE)
   );
+  const [difficultyRating, setDifficultyRating] = useState<number>(
+    typeof initialPayload?.params.difficultyRating === 'number' &&
+      Number.isFinite(initialPayload.params.difficultyRating)
+      ? Math.max(0, Math.min(5, Math.round(initialPayload.params.difficultyRating * 2) / 2))
+      : 0
+  );
+  const [hoverStar, setHoverStar] = useState<number | null>(null);
+  const difficultyPct = resolveDifficultyPercentage(difficultyRating, difficultyMatrix);
+  const previewStar = hoverStar !== null ? hoverStar : difficultyRating;
   const [allowanceState, dispatchAllowance] = useReducer(allowanceReducer, undefined, () => {
     const initialMode: AllowanceMode | '' = initialPayload?.params.allowanceMode ?? '';
     return {
@@ -498,6 +514,7 @@ export function InputWizardModal({
           lot: nextLot,
           allowanceMode: nextMode as AllowanceMode,
           pfdAllowancePct: nextMode === 'none' ? 0 : Math.max(0, Number(nextPfdStr) || 0),
+          difficultyRating,
         };
         onSaveAndCalculate({
           id: initialPayload?.id ?? `assy_${Date.now()}`,
@@ -684,6 +701,7 @@ export function InputWizardModal({
     setCustomer(SAMPLE_KHR_PAYLOAD.params.customer);
     setMasterCctStr(String(SAMPLE_KHR_PAYLOAD.params.masterCct));
     setLotStr(String(SAMPLE_KHR_PAYLOAD.params.lot ?? DEFAULT_LOT_SIZE));
+    setDifficultyRating(SAMPLE_KHR_PAYLOAD.params.difficultyRating ?? 0);
     dispatchAllowance({
       type: 'HYDRATE',
       mode: SAMPLE_KHR_PAYLOAD.params.allowanceMode,
@@ -762,6 +780,7 @@ export function InputWizardModal({
       lot: Math.max(1, Math.round(parsedLot)),
       allowanceMode,
       pfdAllowancePct: allowanceMode === 'none' ? 0 : parsedAllowancePct,
+      difficultyRating,
     };
 
     onSaveAndCalculate({
@@ -920,6 +939,108 @@ export function InputWizardModal({
           />
         </label>
       )}
+
+      {/* Rating Tingkat Kesulitan Manual (0.0 – 5.0 ★, kelipatan 0.5) */}
+      <div className="rounded-xl border border-slate-200 bg-slate-50/70 p-3 space-y-2.5">
+        <div className="flex items-center justify-between gap-2">
+          <span className="text-xs font-semibold text-slate-700">
+            Tingkat Kesulitan Manual (0.0–5.0 ★)
+          </span>
+          <span
+            className={`inline-flex items-center gap-1 px-2 py-0.5 rounded-md border font-mono-num text-[11px] font-semibold whitespace-nowrap ${
+              difficultyRating > 0
+                ? 'bg-amber-50 border-amber-200 text-amber-800'
+                : 'bg-white border-slate-200 text-slate-600'
+            }`}
+          >
+            {difficultyRating.toFixed(1)} ★ (+{difficultyPct.toFixed(2)}%)
+          </span>
+        </div>
+
+        <div className="flex items-center justify-between gap-2">
+          <div
+            className="inline-flex items-center gap-1"
+            onMouseLeave={() => setHoverStar(null)}
+            role="group"
+            aria-label="Pilih rating bintang kesulitan (kelipatan 0.5)"
+          >
+            {[1, 2, 3, 4, 5].map((starNum) => {
+              const halfVal = starNum - 0.5;
+              const isFull = previewStar >= starNum;
+              const isHalf = !isFull && previewStar >= halfVal;
+              return (
+                <div key={starNum} className="relative w-6 h-6 shrink-0">
+                  <Star
+                    className={`w-6 h-6 transition-colors ${
+                      isFull
+                        ? 'fill-amber-400 text-amber-500'
+                        : 'fill-slate-100 text-slate-300'
+                    }`}
+                  />
+                  {isHalf && (
+                    <div className="absolute inset-y-0 left-0 w-1/2 overflow-hidden pointer-events-none">
+                      <Star className="w-6 h-6 fill-amber-400 text-amber-500" />
+                    </div>
+                  )}
+                  <button
+                    type="button"
+                    aria-label={`${halfVal.toFixed(1)} Bintang`}
+                    title={`${halfVal.toFixed(1)} ★ (+${resolveDifficultyPercentage(
+                      halfVal,
+                      difficultyMatrix
+                    ).toFixed(2)}%)`}
+                    onMouseEnter={() => setHoverStar(halfVal)}
+                    onClick={() =>
+                      setDifficultyRating((prev) => (prev === halfVal ? 0 : halfVal))
+                    }
+                    className="absolute inset-y-0 left-0 w-1/2 cursor-pointer focus:outline-none"
+                  />
+                  <button
+                    type="button"
+                    aria-label={`${starNum.toFixed(1)} Bintang`}
+                    title={`${starNum.toFixed(1)} ★ (+${resolveDifficultyPercentage(
+                      starNum,
+                      difficultyMatrix
+                    ).toFixed(2)}%)`}
+                    onMouseEnter={() => setHoverStar(starNum)}
+                    onClick={() =>
+                      setDifficultyRating((prev) => (prev === starNum ? 0 : starNum))
+                    }
+                    className="absolute inset-y-0 right-0 w-1/2 cursor-pointer focus:outline-none"
+                  />
+                </div>
+              );
+            })}
+          </div>
+
+          {difficultyRating > 0 && (
+            <button
+              type="button"
+              onClick={() => setDifficultyRating(0)}
+              className="text-[11px] font-semibold text-slate-500 hover:text-slate-800 underline cursor-pointer whitespace-nowrap"
+            >
+              Reset 0.0
+            </button>
+          )}
+        </div>
+
+        <select
+          aria-label="Pilih jenjang tingkat kesulitan"
+          value={difficultyRating}
+          onChange={(e) => setDifficultyRating(Number(e.target.value) || 0)}
+          className="w-full px-2.5 py-1.5 text-xs bg-white border border-slate-200 rounded-lg text-slate-800 font-medium focus:outline-none focus:ring-2 focus:ring-[#1E3A8A]/20 focus:border-[#1E3A8A]"
+        >
+          {DIFFICULTY_ROW_LABELS.map((lbl, idx) => {
+            const starVal = idx * 0.5;
+            const pct = resolveDifficultyPercentage(starVal, difficultyMatrix);
+            return (
+              <option key={starVal} value={starVal}>
+                {lbl} — +{pct.toFixed(2)}%
+              </option>
+            );
+          })}
+        </select>
+      </div>
     </div>
   );
 
@@ -2200,6 +2321,9 @@ export function InputWizardModal({
                 {allowanceMode ? getAllowanceModeLabel(allowanceMode, 'numbered') : 'Metode belum dipilih'}
                 {allowanceMode && allowanceMode !== 'none'
                   ? ` (${pfdAllowanceStr.trim() === '' ? '-' : `${parsedAllowancePct}%`})`
+                  : ''}
+                {difficultyRating > 0
+                  ? ` · Kesulitan: ${difficultyRating.toFixed(1)} ★ (+${difficultyPct.toFixed(2)}%)`
                   : ''}
               </div>
 

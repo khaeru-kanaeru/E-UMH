@@ -488,7 +488,8 @@ export function calculateCotRowTapingV2(
   // 1. Pre-COT (taping wire bundle sebelum masuk COT)
   const preFull = preBase + L * factor.preFull;
   const preHalf = preBase + L * factor.preHalf;
-  const preSpot = Math.max(1, floorDiv150) * factor.tSpot;
+  const preSpotCount = Math.max(1, Math.floor(L / 150));
+  const preSpot = 3.5 + preSpotCount * factor.tSpot;
   const tPre = (preFull + preHalf + preSpot) / 3;
 
   // 2. Pemasangan Selang COT (kerja fisik insertion/fitting terpisah: COT-B slit vs H-COT non-slit)
@@ -500,7 +501,8 @@ export function calculateCotRowTapingV2(
   // 4. Post-COT (taping luar setelah COT terpasang)
   const postFull = postBase + L * factor.postFull;
   const postHalf = postBase + L * factor.postHalf;
-  const postSpot = Math.max(0, floorDiv150 - 1) * factor.tSpot;
+  const postSpotPoints = Math.floor(L / 150);
+  const postSpot = postSpotPoints > 0 ? (3.5 + postSpotPoints * factor.tSpot) : 0;
   const tPost = (postFull + postHalf + postSpot) / 3;
 
   const secPerUnit = tPre + tUjung + tPost;
@@ -633,4 +635,52 @@ export function calculateCotTapingV2Summary(
     totalSec,
     totalBaseUmhHr: totalSec / 3600,
   };
+}
+
+export const DEFAULT_DIFFICULTY_MATRIX: number[][] = [
+  [0.00],
+  [5.68],
+  [9.70],
+  [12.83],
+  [15.38],
+  [17.54],
+  [19.41],
+  [21.06],
+  [22.53],
+  [23.87],
+  [25.08],
+];
+
+export const DIFFICULTY_ROW_LABELS = [
+  '0.0 Bintang (Normal)',
+  '0.5 Bintang (Sangat Ringan - Bawah)',
+  '1.0 Bintang (Sangat Ringan)',
+  '1.5 Bintang (Ringan - Menengah)',
+  '2.0 Bintang (Menengah)',
+  '2.5 Bintang (Menengah - Atas)',
+  '3.0 Bintang (Sulit)',
+  '3.5 Bintang (Sulit - Atas)',
+  '4.0 Bintang (Sangat Sulit)',
+  '4.5 Bintang (Sangat Sulit - Ekstrem)',
+  '5.0 Bintang (Ekstrem / Treatment Khusus)',
+];
+
+export function upgradeDifficultyMatrix(matrix?: number[][]): number[][] {
+  if (!Array.isArray(matrix) || matrix.length === 0) {
+    return structuredClone(DEFAULT_DIFFICULTY_MATRIX);
+  }
+  const cloned = structuredClone(DEFAULT_DIFFICULTY_MATRIX);
+  for (let i = 0; i < Math.min(matrix.length, cloned.length); i++) {
+    const val = Number(matrix[i]?.[0]);
+    if (Number.isFinite(val) && val >= 0) {
+      cloned[i][0] = val;
+    }
+  }
+  return cloned;
+}
+
+export function resolveDifficultyPercentage(rating: number, difficultyMatrix?: number[][]): number {
+  const matrix = upgradeDifficultyMatrix(difficultyMatrix);
+  const starIdx = Math.round(Math.max(0, Math.min(5.0, rating)) / 0.5);
+  return matrix[Math.min(starIdx, matrix.length - 1)]?.[0] ?? 0;
 }

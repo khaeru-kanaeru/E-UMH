@@ -1488,6 +1488,7 @@ export default function App() {
           autoCutList={autoCutList}
           feederList={feederList}
           cotMatrix={stdDb.cotMatrix}
+          difficultyMatrix={stdDb.difficultyMatrix}
           onClose={() => {
             setWizardOpen(false);
             setEditingPayload(null);
@@ -1500,6 +1501,7 @@ export default function App() {
       {detailRecord && (
         <AssyDetailModal
           record={detailRecord}
+          difficultyMatrix={stdDb.difficultyMatrix}
           onClose={() => setDetailRecord(null)}
           onEdit={(rec) => {
             setDetailRecord(null);

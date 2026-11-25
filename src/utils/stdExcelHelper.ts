@@ -102,9 +102,16 @@ export function exportStdParamsTemplateXlsx(stdDb: StdDatabase): void {
     });
 
     const ws = XLSX.utils.aoa_to_sheet(rows);
-    const firstColWch = cfg.key === 'settingWireMatrix' ? 32 : 16;
+    const firstColWch =
+      cfg.key === 'difficultyMatrix' ? 42 : cfg.key === 'settingWireMatrix' ? 32 : 16;
     const colWch =
-      cfg.key === 'cotMatrix' ? 20 : cfg.key === 'settingWireMatrix' ? 24 : 14;
+      cfg.key === 'cotMatrix'
+        ? 20
+        : cfg.key === 'settingWireMatrix'
+        ? 24
+        : cfg.key === 'difficultyMatrix'
+        ? 18
+        : 14;
     ws['!cols'] = [{ wch: firstColWch }, ...cfg.colLabels.map(() => ({ wch: colWch }))];
     styleSheetHeader(ws, cfg.colLabels.length + 1, 0);
 
@@ -211,6 +218,12 @@ export async function parseStdParamsExcelFile(
       ) {
         return true;
       }
+      if (
+        cfg.key === 'difficultyMatrix' &&
+        /kesulitan|difficulty|bintang|star/i.test(normSheet)
+      ) {
+        return true;
+      }
       return false;
     });
 
@@ -229,6 +242,16 @@ export async function parseStdParamsExcelFile(
             firstCell.includes('cct') ||
             firstCell.includes('tier') ||
             firstCell.includes('kode')
+          ) {
+            headerRow = r;
+            break;
+          }
+        } else if (matchedMatrixCfg.key === 'difficultyMatrix') {
+          if (
+            firstCell.includes('bintang') ||
+            firstCell.includes('rating') ||
+            firstCell.includes('star') ||
+            firstCell.includes('kesulitan')
           ) {
             headerRow = r;
             break;
@@ -276,6 +299,28 @@ export async function parseStdParamsExcelFile(
               : fallbackIdx >= 0 && fallbackIdx < matchedMatrixCfg.rowLabels.length
               ? fallbackIdx
               : -1;
+            if (targetIdx < 0 || !targetMat[targetIdx]) continue;
+            const parsed = parseNumCell(row[1]);
+            if (parsed !== null) {
+              targetMat[targetIdx][0] = parsed;
+              updatedAnyCell = true;
+            }
+          }
+        } else if (matchedMatrixCfg.key === 'difficultyMatrix') {
+          for (let r = headerRow + 1; r < grid.length; r++) {
+            const row = grid[r];
+            if (!row) continue;
+            const rawLbl = String(row[0] ?? '').trim();
+            const starMatch = rawLbl.match(/(\d+\.\d+|\d+)/);
+            const fallbackIdx = r - (headerRow + 1);
+            let targetIdx = -1;
+            if (starMatch) {
+              const parsedStar = parseFloat(starMatch[1]);
+              targetIdx = Math.round(parsedStar / 0.5);
+            }
+            if (targetIdx < 0 || targetIdx >= matchedMatrixCfg.rowLabels.length) {
+              targetIdx = fallbackIdx >= 0 && fallbackIdx < matchedMatrixCfg.rowLabels.length ? fallbackIdx : -1;
+            }
             if (targetIdx < 0 || !targetMat[targetIdx]) continue;
             const parsed = parseNumCell(row[1]);
             if (parsed !== null) {

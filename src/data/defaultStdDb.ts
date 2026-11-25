@@ -1,4 +1,4 @@
-import { DEFAULT_COT_MATRIX, DEFAULT_SETTING_WIRE_MATRIX } from './cotMasterV2';
+import { DEFAULT_COT_MATRIX, DEFAULT_SETTING_WIRE_MATRIX, DEFAULT_DIFFICULTY_MATRIX } from './cotMasterV2';
 import {
   AssyInputPayload,
   AutoCutItem,
@@ -169,6 +169,7 @@ export const DEFAULT_STD_DATABASE: StdDatabase = {
   ],
   cotMatrix: structuredClone(DEFAULT_COT_MATRIX),
   settingWireMatrix: structuredClone(DEFAULT_SETTING_WIRE_MATRIX),
+  difficultyMatrix: structuredClone(DEFAULT_DIFFICULTY_MATRIX),
   params: [
     { id: 'ac_rep_app', sheet: 'Autocutting', stage: 'Dandori', name: 'Replace applicator & terminals', basis: 'sec/lot', val: 210 },
     { id: 'ac_trial', sheet: 'Autocutting', stage: 'Dandori', name: 'Check a trial shot', basis: 'sec/lot', val: 30 },
