@@ -866,8 +866,8 @@ export const DEFAULT_PROCESS_DISCS: ProcessLogicDisc[] = [
     processName: 'Assembly',
     jpName: 'アッセンブリ',
     weight: 1.45,
-    version: '4.0.0',
-    description: 'Perakitan board (Assembly) kronologis & basis tunggal sec/unit(pcs): Scan Awal -> Wire Transport -> Untangle (>2500mm) -> Setting Wires (panjang COT mm × 0.22 × cctDensityFactor PPCS) -> Taping Non-COT -> Taping Pre-COT -> Pemasangan Selang COT (COT-B & H-COT) -> Tutup Ujung & Branch COT -> Taping Post-COT -> Measuring (+15%) -> Aksesoris -> Removing -> Scan Akhir -> Transport Harness.',
+    version: '4.2.0',
+    description: 'Perakitan board (Assembly) kronologis & basis tunggal sec/unit(pcs): Scan Awal -> Wire Transport -> Untangle (>2500mm) -> Setting Wires (Weighted COT mm × 0.18 × cctDensityFactor PPCS) -> Taping Pre-COT -> Pemasangan Selang COT (COT-B & H-COT) -> Tutup Ujung & Branch COT -> Taping Post-COT -> Measuring (+15%) -> Aksesoris -> Removing -> Scan Akhir -> Transport Harness.',
     isEmptyTemplate: false,
     code: `function calculate(ctx) {
   const { ppcsList: ppcs, assemblyCotList: dwg, partList: pl, assemblyComponents, helpers } = ctx;
@@ -925,17 +925,12 @@ export const DEFAULT_PROCESS_DISCS: ProcessLogicDisc[] = [
   const rateWireTransport = getP('as_tr_in', 30.0);
   const rateUntangle = getP('as_untangle', 2.0);
 
-  // Setting Wires on Board berbasis total panjang COT (mm) × 0.22 dtk/mm × faktor kepadatan sirkuit PPCS
-  const rateSetPerMm = getP('as_set_mm', 0.22);
+  // Setting Wires on Board berbasis panjang COT berbobot diameter (weightedCotMm) × 0.18 dtk/mm × faktor kepadatan sirkuit PPCS
+  const rateSetPerMm = getP('as_set_mm', 0.18);
+  const weightedCotMm = cotV2 ? cotV2.weightedLengthMm : 0;
   const cctDensityFactor = 1 + (totalCctPpcs / 1000) * 0.25;
-  const settingWireRate = totalCotLengthMm > 0 ? rateSetPerMm * cctDensityFactor : 0;
-  const settingWireSec = totalCotLengthMm * settingWireRate;
-
-  // Hindari double-counting panjang COT: taping non-COT hanya menghitung baris bertipe 'T'
-  const nonCotTapingTl = dwg
-    .filter((r) => r.type === 'T')
-    .reduce((a, b) => a + (Number(b.tl) || 0) * (b.qty !== undefined && b.qty > 0 ? b.qty : 1), 0);
-  const rateNonCotTap = getP('as_tap_non_cot', 0.065628357);
+  const settingWireSec = weightedCotMm * rateSetPerMm * cctDensityFactor;
+  const settingWireRate = totalCotLengthMm > 0 ? settingWireSec / Math.max(totalCotLengthMm, 1) : 0;
 
   // Taping COT Master_COT_V2 (Taping Pre-COT, Pemasangan Selang COT terpisah, Tutup Ujung & Branch, Taping Post-COT)
   const avgPreRate = totalCotQty > 0 ? cotV2.totalPreSec / totalCotQty : 0;
@@ -967,8 +962,7 @@ export const DEFAULT_PROCESS_DISCS: ProcessLogicDisc[] = [
     mkSub('Persiapan', 'Scan Barcode Awal', 'sec/unit(pcs)', 1, rateScanStart, 1 * rateScanStart),
     mkSub('Persiapan', 'Wire Transport (bawa gulungan ke jig)', 'sec/unit(pcs)', 1, rateWireTransport, 1 * rateWireTransport),
     mkSub('Persiapan', 'Urai Gulungan Wire Panjang (>2500 mm)', 'sec/unit(pcs)', untangleWireQty, rateUntangle, untangleWireQty * rateUntangle),
-    mkSub('Setting Wire', 'Setting Wires on Board (COT mm × ' + rateSetPerMm.toFixed(2) + ' × DF ' + cctDensityFactor.toFixed(3) + ')', 'sec/unit(pcs)', totalCotLengthMm, settingWireRate, settingWireSec),
-    mkSub('Taping Non-COT', 'Taping Wire Non-COT (per mm)', 'sec/unit(pcs)', nonCotTapingTl, rateNonCotTap, nonCotTapingTl * rateNonCotTap),
+    mkSub('Setting Wire', 'Setting Wires on Board (Weighted COT mm × ' + rateSetPerMm.toFixed(2) + ' × DF ' + cctDensityFactor.toFixed(3) + ')', 'sec/unit(pcs)', totalCotLengthMm, settingWireRate, settingWireSec),
     mkSub('Master_COT_V2', 'Taping Pre-COT (Full/Half 25mm/Spot 150mm + 3.5s, per DIA)', 'sec/unit(pcs)', totalCotQty, avgPreRate, cotV2.totalPreSec),
     mkSub('Pemasangan COT', cotInsertLabel, 'sec/unit(pcs)', totalCotQty, avgCotInsertRate, totalCotInsertSec),
     mkSub('Master_COT_V2', 'Tutup Ujung & Taping Branch / Persimpangan COT (Multi-Branch D7–D36)', 'sec/unit(pcs)', totalCotQty, avgUjungRate, cotV2.totalUjungSec),
@@ -1127,14 +1121,14 @@ export function upgradeBuiltinProcessDiscs(discs: ProcessLogicDisc[]): ProcessLo
   const defaultAssembly = DEFAULT_PROCESS_DISCS.find((d) => d.processId === 17);
   if (!defaultAssembly) return discs;
 
-  const legacyVersions = new Set(['1.0.0', '2.0.0', '2.1.0', '3.0.0', '3.1.0', '3.2.0']);
+  const legacyVersions = new Set(['1.0.0', '2.0.0', '2.1.0', '3.0.0', '3.1.0', '3.2.0', '4.0.0', '4.1.0']);
 
   return discs.map((disc) => {
     if (
       disc.processId === 17 &&
       !disc.isCustomProcess &&
       (legacyVersions.has(disc.version) ||
-        !disc.code.includes('as_set_mm') ||
+        !disc.code.includes('weightedLengthMm') ||
         !disc.code.includes('as_cot_ins_b_base'))
     ) {
       return structuredClone(defaultAssembly);

@@ -289,6 +289,24 @@ export function classifyCotTubeKind(
   return 'COT-B';
 }
 
+export const COT_DIA_WEIGHTS: Record<string, number> = {
+  D7: 0.70,
+  D10: 0.85,
+  D13: 1.00,
+  D15: 1.15,
+  D19: 1.35,
+  D22: 1.55,
+  D25: 1.80,
+  D28: 2.05,
+  D32: 2.30,
+  D36: 2.60,
+};
+
+export function getCotDiaWeight(diaCode: string): number {
+  const norm = diaCode.trim().toUpperCase();
+  return COT_DIA_WEIGHTS[norm] ?? 1.00;
+}
+
 export interface CotRowCalcV2 {
   row: AssemblyCotItem;
   diaCode: string;
@@ -296,6 +314,8 @@ export interface CotRowCalcV2 {
   cotKind: CotTubeKind;
   lengthMm: number;
   qty: number;
+  diaWeight: number;
+  weightedLengthMm: number;
   preFull: number;
   preHalf: number;
   preSpot: number;
@@ -322,6 +342,7 @@ export interface CotTapingV2Summary {
   cotV2RowCount: number;
   totalPieces: number;
   totalLengthMm: number;
+  weightedLengthMm: number;
   totalTarikanCot: number;
   totalPreSec: number;
   totalInsertSec: number;
@@ -389,8 +410,10 @@ export function calculateCotRowTapingV2(
       : 'COT-B';
 
   const factor = resolveCotMasterFactor(rawDia, cotMatrix);
+  const diaWeight = getCotDiaWeight(factor.dia);
   const L = Math.max(0, Number(item.tl) || 0);
   const Q = item.qty !== undefined ? Math.max(0, Number(item.qty) || 0) : 1;
+  const weightedLengthMm = L * Q * diaWeight;
 
   if (L <= 0 || Q <= 0) {
     return {
@@ -400,6 +423,8 @@ export function calculateCotRowTapingV2(
       cotKind,
       lengthMm: L,
       qty: Q,
+      diaWeight,
+      weightedLengthMm: 0,
       preFull: 0,
       preHalf: 0,
       preSpot: 0,
@@ -493,6 +518,8 @@ export function calculateCotRowTapingV2(
     cotKind,
     lengthMm: L,
     qty: Q,
+    diaWeight,
+    weightedLengthMm,
     preFull,
     preHalf,
     preSpot,
@@ -530,6 +557,7 @@ export function calculateCotTapingV2Summary(
       cotV2RowCount: 0,
       totalPieces: 0,
       totalLengthMm: 0,
+      weightedLengthMm: 0,
       totalTarikanCot: 0,
       totalPreSec: 0,
       totalInsertSec: 0,
@@ -549,6 +577,7 @@ export function calculateCotTapingV2Summary(
   const rows = cotItems.map((item) => calculateCotRowTapingV2(item, partList, cotMatrix, options));
   let totalPieces = 0;
   let totalLengthMm = 0;
+  let weightedLengthMm = 0;
   let totalTarikanCot = 0;
   let totalPreSec = 0;
   let totalInsertSec = 0;
@@ -565,6 +594,7 @@ export function calculateCotTapingV2Summary(
   for (const r of rows) {
     totalPieces += r.qty;
     totalLengthMm += r.lengthMm * r.qty;
+    weightedLengthMm += r.weightedLengthMm;
     totalTarikanCot += r.tarikanCot;
     totalPreSec += r.totalPreSec;
     totalInsertSec += r.totalInsertSec;
@@ -588,6 +618,7 @@ export function calculateCotTapingV2Summary(
     cotV2RowCount: rows.length,
     totalPieces,
     totalLengthMm,
+    weightedLengthMm,
     totalTarikanCot,
     totalPreSec,
     totalInsertSec,

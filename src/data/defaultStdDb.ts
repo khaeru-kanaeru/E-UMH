@@ -342,7 +342,7 @@ export const DEFAULT_STD_DATABASE: StdDatabase = {
     { id: 'as_scan_start', sheet: 'Assembly', stage: 'Persiapan', name: 'Scan Barcode Awal', basis: 'sec/unit(pcs)', val: 10 },
     { id: 'as_tr_in', sheet: 'Assembly', stage: 'Persiapan', name: 'Wire Transport (bawa gulungan ke jig)', basis: 'sec/unit(pcs)', val: 30 },
     { id: 'as_untangle', sheet: 'Assembly', stage: 'Persiapan', name: 'Urai Gulungan Wire Panjang (>2500 mm)', basis: 'sec/unit(pcs)', val: 2 },
-    { id: 'as_set_mm', sheet: 'Assembly', stage: 'Setting Wire', name: 'Setting Wires on Board (per mm panjang COT × density PPCS)', basis: 'sec/unit(pcs)', val: 0.22 },
+    { id: 'as_set_mm', sheet: 'Assembly', stage: 'Setting Wire', name: 'Setting Wires on Board (per mm panjang COT berbobot diameter × density PPCS)', basis: 'sec/unit(pcs)', val: 0.18 },
     { id: 'as_tap_non_cot', sheet: 'Assembly', stage: 'Taping Non-COT', name: 'Taping Wire Non-COT (per mm)', basis: 'sec/unit(pcs)', val: 0.065628357 },
     { id: 'as_cot_pre', sheet: 'Assembly', stage: 'Master_COT_V2', name: 'Taping Pre-COT (Full/Half 25mm/Spot 150mm + 3.5s, per DIA)', basis: 'sec/unit(pcs)', val: 3.5 },
     { id: 'as_cot_ins_b_base', sheet: 'Assembly', stage: 'Pemasangan COT', name: 'Pemasangan Selang COT-B / Slit — Base (per pcs)', basis: 'sec/unit(pcs)', val: 3.0 },
