@@ -1,15 +1,42 @@
 import { initializeApp } from 'firebase/app';
 import { GoogleAuthProvider, getAuth } from 'firebase/auth';
-import { doc, getDocFromServer, getFirestore } from 'firebase/firestore';
+import {
+  Firestore,
+  doc,
+  getDocFromServer,
+  getFirestore,
+  initializeFirestore,
+} from 'firebase/firestore';
 import firebaseConfig from '../firebase-applet-config.json';
 
 const app = initializeApp(firebaseConfig);
 export const FIREBASE_PROJECT_ID = firebaseConfig.projectId;
 export const FIRESTORE_DATABASE_ID = firebaseConfig.firestoreDatabaseId || '(default)';
 export const FIRESTORE_CONSOLE_RULES_URL = `https://console.firebase.google.com/project/${encodeURIComponent(FIREBASE_PROJECT_ID)}/firestore/databases/${encodeURIComponent(FIRESTORE_DATABASE_ID === '(default)' ? '-default-' : FIRESTORE_DATABASE_ID)}/rules`;
-export const db = getFirestore(app, firebaseConfig.firestoreDatabaseId);
-export const legacyDefaultDb =
-  FIRESTORE_DATABASE_ID !== '(default)' ? getFirestore(app, '(default)') : null;
+
+function createFirestoreInstance(databaseId?: string): Firestore {
+  try {
+    return initializeFirestore(
+      app,
+      { experimentalAutoDetectLongPolling: true },
+      databaseId
+    );
+  } catch {
+    return databaseId ? getFirestore(app, databaseId) : getFirestore(app);
+  }
+}
+
+export const db = createFirestoreInstance(firebaseConfig.firestoreDatabaseId);
+
+let cachedLegacyDefaultDb: Firestore | null | undefined;
+export function getLegacyDefaultDb(): Firestore | null {
+  if (FIRESTORE_DATABASE_ID === '(default)') return null;
+  if (cachedLegacyDefaultDb === undefined) {
+    cachedLegacyDefaultDb = createFirestoreInstance('(default)');
+  }
+  return cachedLegacyDefaultDb;
+}
+
 export const auth = getAuth(app);
 export const googleProvider = new GoogleAuthProvider();
 googleProvider.setCustomParameters({ prompt: 'select_account' });

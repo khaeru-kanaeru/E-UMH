@@ -24,7 +24,7 @@ import {
 import { upgradeLegacyCotMatrix, upgradeDifficultyMatrix } from '../data/cotMasterV2';
 import { upgradeAssemblyStdParams } from '../data/defaultStdDb';
 import { calculateUmh, getAllowSecForMode } from '../engine/umhCalculator';
-import { OperationType, db, handleFirestoreError, legacyDefaultDb } from '../firebase';
+import { OperationType, db, getLegacyDefaultDb, handleFirestoreError } from '../firebase';
 import {
   AssyRecord,
   AutoCutItem,
@@ -96,6 +96,18 @@ export function isRecycleBinPermissionError(err: unknown): boolean {
   const msg = err instanceof Error ? err.message : String(err);
   if (!isPermissionDeniedError(err)) return false;
   return msg.includes('recycleBin');
+}
+
+export function isOfflineOrNetworkError(err: unknown): boolean {
+  const msg = (err instanceof Error ? err.message : String(err)).toLowerCase();
+  return (
+    msg.includes('client is offline') ||
+    msg.includes('could not reach cloud firestore backend') ||
+    msg.includes('network-request-failed') ||
+    msg.includes('err_network') ||
+    msg.includes('failed to fetch') ||
+    msg.includes('unavailable')
+  );
 }
 
 export interface CloudUserProfile {
@@ -556,14 +568,17 @@ export async function initializeCloudWorkspace(
       } catch {
         // Ignore if legacy doc doesn't exist in current DB
       }
-      if (!legacyData && legacyDefaultDb) {
-        try {
-          const defaultLegacySnap = await getDoc(doc(legacyDefaultDb, 'masterConfigs', uid));
-          if (defaultLegacySnap.exists()) {
-            legacyData = defaultLegacySnap.data() as Record<string, unknown>;
+      if (!legacyData) {
+        const legacyDb = getLegacyDefaultDb();
+        if (legacyDb) {
+          try {
+            const defaultLegacySnap = await getDoc(doc(legacyDb, 'masterConfigs', uid));
+            if (defaultLegacySnap.exists()) {
+              legacyData = defaultLegacySnap.data() as Record<string, unknown>;
+            }
+          } catch {
+            // Ignore if legacy (default) DB is inaccessible or empty
           }
-        } catch {
-          // Ignore if legacy (default) DB is inaccessible or empty
         }
       }
 
@@ -652,10 +667,11 @@ export async function initializeCloudWorkspace(
       const seedRecords: AssyRecord[] = [];
       const seenDocIds = new Set<string>();
 
-      if (legacyDefaultDb) {
+      const legacyDb = getLegacyDefaultDb();
+      if (legacyDb) {
         try {
           const legacyAssySnap = await getDocs(
-            query(collection(legacyDefaultDb, 'assyRecords'), where('ownerId', '==', uid))
+            query(collection(legacyDb, 'assyRecords'), where('ownerId', '==', uid))
           );
           legacyAssySnap.forEach((docSnap) => {
             if (docSnap.id === 'sample_khr55431') return;
@@ -699,12 +715,13 @@ export async function initializeCloudWorkspace(
   }
 
   // 5. Silently migrate prior `refreshHistory` from legacy `(default)` DB if shared history is empty
-  if (legacyDefaultDb) {
-    try {
-      const anyHistSnap = await getDocs(query(collection(db, 'refreshHistory'), limit(1)));
-      if (anyHistSnap.empty) {
+  try {
+    const anyHistSnap = await getDocs(query(collection(db, 'refreshHistory'), limit(1)));
+    if (anyHistSnap.empty) {
+      const legacyDb = getLegacyDefaultDb();
+      if (legacyDb) {
         const legacyHistSnap = await getDocs(
-          query(collection(legacyDefaultDb, 'refreshHistory'), where('ownerId', '==', uid))
+          query(collection(legacyDb, 'refreshHistory'), where('ownerId', '==', uid))
         );
         for (const docSnap of legacyHistSnap.docs) {
           const d = docSnap.data() as Record<string, unknown>;
@@ -724,9 +741,9 @@ export async function initializeCloudWorkspace(
           });
         }
       }
-    } catch {
-      // Ignore if legacy (default) history cannot be read
     }
+  } catch {
+    // Ignore if legacy (default) history cannot be read
   }
 
   return { recycleBinCloudAvailable };

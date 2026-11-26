@@ -13,10 +13,12 @@ import {
   UserCheck,
   X,
 } from 'lucide-react';
+import { getDefaultLotFromStdDb } from '../data/defaultStdDb';
 import {
   calculateUmh,
   getAllowanceModeLabel,
   getAllowSecForMode,
+  getEffectiveLot,
   getVariantResult,
 } from '../engine/umhCalculator';
 import {
@@ -44,6 +46,8 @@ interface RefreshUmhModalProps {
   autoCutList: AutoCutItem[];
   feederList: FeederItem[];
   lockedPicName?: string;
+  initialApplyDefaultLot?: boolean;
+  initialSelectAll?: boolean;
   onCompleteRefresh: (
     updatedMap: Map<string, AssyRecord>,
     historyEntry: RefreshHistoryEntry
@@ -59,19 +63,32 @@ export function RefreshUmhModal({
   autoCutList,
   feederList,
   lockedPicName,
+  initialApplyDefaultLot = false,
+  initialSelectAll = false,
   onCompleteRefresh,
   onPrintPdf,
   onCancelAll,
   onClose,
 }: RefreshUmhModalProps) {
+  const policyDefaultLot = useMemo(() => getDefaultLotFromStdDb(stdDb), [stdDb]);
   const [stage, setStage] = useState<RefreshStage>('select');
   const [searchQuery, setSearchQuery] = useState('');
-  const [selectedIds, setSelectedIds] = useState<Set<string>>(() => new Set());
+  const [selectedIds, setSelectedIds] = useState<Set<string>>(() =>
+    initialSelectAll ? new Set(records.map((r) => r.id)) : new Set()
+  );
+  const [applyDefaultLot, setApplyDefaultLot] = useState<boolean>(initialApplyDefaultLot);
   const normalizedLockedPic = (lockedPicName || '').trim();
   const [responsibleName, setResponsibleName] = useState<string>(
     () => normalizedLockedPic || loadLastPicName()
   );
   const [picError, setPicError] = useState(false);
+
+  const differentLotCount = useMemo(
+    () =>
+      records.filter((r) => getEffectiveLot(r.params.lot, policyDefaultLot) !== policyDefaultLot)
+        .length,
+    [records, policyDefaultLot]
+  );
 
   // Progress state
   const [progressCurrent, setProgressCurrent] = useState(0);
@@ -158,7 +175,18 @@ export function RefreshUmhModal({
       await new Promise((resolve) => setTimeout(resolve, 160));
       if (cancelRef.current) return;
 
-      const enriched = reEnrichPayloadWithLists(beforeRec, autoCutList, feederList);
+      const baseEnriched = reEnrichPayloadWithLists(beforeRec, autoCutList, feederList);
+      const prevLot = getEffectiveLot(beforeRec.params.lot, policyDefaultLot);
+      const enriched = applyDefaultLot
+        ? {
+            ...baseEnriched,
+            params: {
+              ...baseEnriched.params,
+              lot: policyDefaultLot,
+            },
+          }
+        : baseEnriched;
+
       const afterCalc = calculateUmh(enriched, stdDb, autoCutList, feederList);
       const afterRec: AssyRecord = {
         ...enriched,
@@ -167,9 +195,12 @@ export function RefreshUmhModal({
       };
 
       const diff = computeAssyRefreshDiff(beforeRec, afterRec);
+      const lotChanged = applyDefaultLot && prevLot !== policyDefaultLot;
       if (diff) {
         updatedMap.set(beforeRec.id, afterRec);
         diffs.push(diff);
+      } else if (lotChanged) {
+        updatedMap.set(beforeRec.id, afterRec);
       }
     }
 
@@ -327,6 +358,29 @@ export function RefreshUmhModal({
               </div>
             </div>
 
+            <div className="px-6 py-3 bg-white border-b border-slate-200">
+              <label className="flex items-start gap-2.5 cursor-pointer select-none">
+                <input
+                  type="checkbox"
+                  checked={applyDefaultLot}
+                  onChange={(e) => setApplyDefaultLot(e.target.checked)}
+                  className="mt-0.5 w-4 h-4 rounded border-slate-300 text-[#047857] focus:ring-[#047857] cursor-pointer"
+                />
+                <div className="text-xs leading-relaxed">
+                  <span className="font-semibold text-slate-900">
+                    Terapkan kebijakan LOT Default terbaru (
+                    <span className="font-mono-num text-[#1E3A8A]">{policyDefaultLot} pcs/lot</span>
+                    ) ke seluruh Assy yang dipilih
+                  </span>
+                  <p className="text-[11px] text-slate-500 mt-0.5">
+                    {differentLotCount > 0
+                      ? `${differentLotCount} dari ${records.length} Assy saat ini memakai LOT berbeda. Centang opsi ini untuk menyeragamkan LOT dan menghitung ulang Dandori & Matriks 2D sekaligus.`
+                      : `Seluruh ${records.length} Assy saat ini sudah menggunakan LOT ${policyDefaultLot} pcs/lot.`}
+                  </p>
+                </div>
+              </label>
+            </div>
+
             <div className="flex-1 overflow-auto p-6 bg-[#f8fafc]">
               <div className="rounded-xl border border-slate-200 bg-white overflow-x-auto">
                 <table className="w-full text-left border-collapse">
@@ -397,6 +451,18 @@ export function RefreshUmhModal({
                             <span className="text-slate-500">
                               {getAllowanceModeLabel(rec.params.allowanceMode, 'short')}
                             </span>
+                            <span className="text-slate-400 mx-1.5">·</span>
+                            <span className="font-mono-num text-slate-600">
+                              LOT {getEffectiveLot(rec.params.lot, policyDefaultLot)}
+                              {applyDefaultLot &&
+                                getEffectiveLot(rec.params.lot, policyDefaultLot) !==
+                                  policyDefaultLot && (
+                                  <span className="font-semibold text-[#047857]">
+                                    {' '}
+                                    → {policyDefaultLot}
+                                  </span>
+                                )}
+                            </span>
                           </td>
                           <td className="py-3 px-3 text-right font-mono-num text-slate-700">
                             {rec.params.masterCct}
@@ -459,6 +525,12 @@ export function RefreshUmhModal({
                     untuk diperiksa dan dihitung ulang terhadap <strong>Parameter STD</strong>,{' '}
                     <strong>Auto-Cut List</strong>, dan <strong>Feeder List</strong> saat ini.
                   </p>
+                  {applyDefaultLot && (
+                    <p className="text-xs font-semibold text-[#047857] bg-emerald-50 border border-emerald-200 rounded-lg px-3 py-2">
+                      Kebijakan LOT Default baru ({policyDefaultLot} pcs/lot) akan diterapkan ke
+                      seluruh {selectedRecords.length} Assy terpilih sebelum kalkulasi ulang.
+                    </p>
+                  )}
                   <p className="text-xs text-slate-600 leading-relaxed">
                     Assy yang tidak mengalami perubahan nilai UMH tidak akan dimunculkan pada
                     preview dan tidak akan diubah di database.

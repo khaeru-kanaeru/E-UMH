@@ -7,6 +7,14 @@ import {
 } from '../types/umh';
 
 export const CONDITIONAL_AC_TERMS = new Set(['1500-0110', '8100-0461']);
+export const SYS_DEFAULT_LOT_PARAM_ID = 'sys_default_lot';
+export const DEFAULT_LOT_POLICY_VALUE = 15;
+
+export function getDefaultLotFromStdDb(stdDb?: StdDatabase | null): number {
+  const found = stdDb?.params?.find((p) => p.id === SYS_DEFAULT_LOT_PARAM_ID);
+  const val = found ? Number(found.val) : NaN;
+  return Number.isFinite(val) && val >= 1 ? Math.max(1, Math.round(val)) : DEFAULT_LOT_POLICY_VALUE;
+}
 
 export const PROCESS_DIFF_MAP: Record<string, number> = {
   'Assembly': 1.45,
@@ -169,6 +177,14 @@ export const DEFAULT_STD_DATABASE: StdDatabase = {
   cotMatrix: structuredClone(DEFAULT_COT_MATRIX),
   difficultyMatrix: structuredClone(DEFAULT_DIFFICULTY_MATRIX),
   params: [
+    {
+      id: SYS_DEFAULT_LOT_PARAM_ID,
+      sheet: 'Kebijakan Umum',
+      stage: 'Kebijakan LOT',
+      name: 'LOT Default Produksi (pcs/lot)',
+      basis: 'pcs/lot',
+      val: DEFAULT_LOT_POLICY_VALUE,
+    },
     { id: 'ac_rep_app', sheet: 'Autocutting', stage: 'Dandori', name: 'Replace applicator & terminals', basis: 'sec/lot', val: 210 },
     { id: 'ac_trial', sheet: 'Autocutting', stage: 'Dandori', name: 'Check a trial shot', basis: 'sec/lot', val: 30 },
     { id: 'ac_rep_feeder', sheet: 'Autocutting', stage: 'Dandori', name: 'Replace seal feeder & rubber seals', basis: 'sec/lot', val: 280 },
@@ -478,7 +494,11 @@ export function upgradeAssemblyStdParams(params: StdDatabase['params']): StdData
   const mergedIds = new Set(merged.map((p) => p.id));
   for (const dp of DEFAULT_STD_DATABASE.params) {
     if (dp.sheet !== 'Assembly' && !mergedIds.has(dp.id)) {
-      merged.push(structuredClone(dp));
+      if (dp.id === SYS_DEFAULT_LOT_PARAM_ID) {
+        merged.unshift(structuredClone(dp));
+      } else {
+        merged.push(structuredClone(dp));
+      }
     }
   }
 

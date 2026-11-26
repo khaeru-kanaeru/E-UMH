@@ -1,5 +1,5 @@
-import { useEffect, useRef, useState } from 'react';
-import { ChevronDown, MoreHorizontal } from 'lucide-react';
+import { CSSProperties, useCallback, useEffect, useRef, useState } from 'react';
+import { ChevronDown, MoreHorizontal, MoreVertical } from 'lucide-react';
 import type { LucideIcon } from 'lucide-react';
 
 export interface ActionMenuItem {
@@ -21,6 +21,13 @@ interface ActionMenuProps {
   items: ActionMenuItem[];
   align?: 'left' | 'right';
   compact?: boolean;
+  triggerIcon?: LucideIcon;
+  triggerIconClassName?: string;
+  triggerClassName?: string;
+  kebabVertical?: boolean;
+  disabled?: boolean;
+  menuWidthClass?: string;
+  fixedPosition?: boolean;
 }
 
 export function ActionMenu({
@@ -29,12 +36,48 @@ export function ActionMenu({
   items,
   align = 'right',
   compact = false,
+  triggerIcon: TriggerIcon,
+  triggerIconClassName,
+  triggerClassName,
+  kebabVertical = false,
+  disabled = false,
+  menuWidthClass = 'w-60',
+  fixedPosition = false,
 }: ActionMenuProps) {
   const [open, setOpen] = useState(false);
+  const [fixedStyle, setFixedStyle] = useState<CSSProperties | undefined>(undefined);
   const containerRef = useRef<HTMLDivElement>(null);
+  const buttonRef = useRef<HTMLButtonElement>(null);
+
+  const updateFixedPosition = useCallback(() => {
+    if (!fixedPosition || !buttonRef.current) return;
+    const rect = buttonRef.current.getBoundingClientRect();
+    const estimatedHeight = Math.min(320, items.length * 56 + 24);
+    const spaceBelow = window.innerHeight - rect.bottom;
+    const openUpward = spaceBelow < estimatedHeight && rect.top > estimatedHeight;
+
+    const style: CSSProperties = {
+      position: 'fixed',
+      zIndex: 60,
+    };
+    if (openUpward) {
+      style.bottom = window.innerHeight - rect.top + 6;
+    } else {
+      style.top = rect.bottom + 6;
+    }
+    if (align === 'right') {
+      style.right = Math.max(8, window.innerWidth - rect.right);
+    } else {
+      style.left = Math.max(8, rect.left);
+    }
+    setFixedStyle(style);
+  }, [fixedPosition, align, items.length]);
 
   useEffect(() => {
     if (!open) return;
+    if (fixedPosition) {
+      updateFixedPosition();
+    }
     const handlePointerDown = (e: MouseEvent) => {
       if (containerRef.current && !containerRef.current.contains(e.target as Node)) {
         setOpen(false);
@@ -45,30 +88,58 @@ export function ActionMenu({
         setOpen(false);
       }
     };
+    const handleViewportChange = () => {
+      if (fixedPosition) setOpen(false);
+    };
     document.addEventListener('mousedown', handlePointerDown);
     document.addEventListener('keydown', handleKeyDown);
+    if (fixedPosition) {
+      window.addEventListener('scroll', handleViewportChange, true);
+      window.addEventListener('resize', handleViewportChange);
+    }
     return () => {
       document.removeEventListener('mousedown', handlePointerDown);
       document.removeEventListener('keydown', handleKeyDown);
+      if (fixedPosition) {
+        window.removeEventListener('scroll', handleViewportChange, true);
+        window.removeEventListener('resize', handleViewportChange);
+      }
     };
-  }, [open]);
+  }, [open, fixedPosition, updateFixedPosition]);
+
+  const KebabIcon = kebabVertical ? MoreVertical : MoreHorizontal;
 
   return (
     <div ref={containerRef} className="relative inline-block">
       <button
+        ref={buttonRef}
         type="button"
-        onClick={() => setOpen((v) => !v)}
+        disabled={disabled}
+        onClick={() => {
+          if (disabled) return;
+          if (!open && fixedPosition) {
+            updateFixedPosition();
+          }
+          setOpen((v) => !v);
+        }}
         aria-haspopup="menu"
         aria-expanded={open}
         aria-label={ariaLabel}
-        className={`inline-flex items-center justify-center gap-1.5 rounded-xl bg-white border text-xs font-semibold transition-colors whitespace-nowrap shrink-0 cursor-pointer ${
-          open
-            ? 'border-[#1E3A8A]/40 bg-slate-50 text-slate-900 ring-2 ring-[#1E3A8A]/10'
-            : 'border-slate-200 text-slate-700 hover:bg-slate-50 hover:text-slate-900'
-        } ${compact ? 'px-2.5 py-2' : 'px-3.5 py-2'}`}
+        title={ariaLabel}
+        className={
+          triggerClassName ??
+          `inline-flex items-center justify-center gap-1.5 rounded-xl bg-white border text-xs font-semibold transition-colors whitespace-nowrap shrink-0 cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed ${
+            open
+              ? 'border-[#1E3A8A]/40 bg-slate-50 text-slate-900 ring-2 ring-[#1E3A8A]/10'
+              : 'border-slate-200 text-slate-700 hover:bg-slate-50 hover:text-slate-900'
+          } ${compact ? 'px-2 py-1.5' : 'px-3.5 py-2'}`
+        }
       >
         {label ? (
           <>
+            {TriggerIcon && (
+              <TriggerIcon className={`w-3.5 h-3.5 shrink-0 ${triggerIconClassName ?? ''}`} />
+            )}
             <span>{label}</span>
             <ChevronDown
               className={`w-3.5 h-3.5 text-slate-400 transition-transform duration-150 ${
@@ -76,17 +147,22 @@ export function ActionMenu({
               }`}
             />
           </>
+        ) : TriggerIcon ? (
+          <TriggerIcon className={`w-4 h-4 ${triggerIconClassName ?? ''}`} />
         ) : (
-          <MoreHorizontal className="w-4 h-4" />
+          <KebabIcon className="w-4 h-4" />
         )}
       </button>
 
       {open && (
         <div
           role="menu"
-          className={`absolute mt-1.5 w-60 rounded-xl bg-white border border-slate-200 shadow-lg py-1.5 z-30 ${
-            align === 'right' ? 'right-0' : 'left-0'
-          }`}
+          style={fixedPosition ? fixedStyle : undefined}
+          className={`${
+            fixedPosition
+              ? ''
+              : `absolute mt-1.5 z-30 ${align === 'right' ? 'right-0' : 'left-0'}`
+          } ${menuWidthClass} rounded-xl bg-white border border-slate-200 shadow-lg py-1.5 text-left`}
         >
           {items.map((item) => {
             const Icon = item.icon;

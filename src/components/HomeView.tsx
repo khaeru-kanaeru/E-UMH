@@ -8,6 +8,8 @@ import {
   Line,
   ReferenceLine,
   ResponsiveContainer,
+  Scatter,
+  ScatterChart,
   Tooltip,
   XAxis,
   YAxis,
@@ -32,6 +34,7 @@ interface HomeViewProps {
 
 type TrendGroupMode = 'by_assy' | 'by_date';
 type TrendUnitMode = 'hour' | 'sec';
+type ScatterVariant = 'reg' | 'smv';
 
 interface TrendPoint {
   key: string;
@@ -43,6 +46,16 @@ interface TrendPoint {
   cct: number;
   count: number;
   record?: AssyRecord;
+}
+
+interface ScatterPoint {
+  id: string;
+  assyNo: string;
+  customer: string;
+  cct: number;
+  umh: number;
+  lot: number;
+  record: AssyRecord;
 }
 
 function getActiveAllowSec(rec: AssyRecord, variant: 'reg' | 'smv'): number {
@@ -66,6 +79,7 @@ export function HomeView({
   const latestRecord = records[0];
   const [groupMode, setGroupMode] = useState<TrendGroupMode>('by_assy');
   const [unitMode, setUnitMode] = useState<TrendUnitMode>('hour');
+  const [scatterVariant, setScatterVariant] = useState<ScatterVariant>('reg');
 
   const analytics = useMemo(() => {
     if (records.length === 0) {
@@ -249,6 +263,86 @@ export function HomeView({
       unitDigits
     )
   );
+
+  const scatterAnalytics = useMemo(() => {
+    if (records.length === 0) {
+      return {
+        points: [] as ScatterPoint[],
+        avgCct: 0,
+        avgUmh: 0,
+        minCct: 0,
+        maxCct: 0,
+        cctTol: 10,
+        umhTol: 0.05,
+        xDomain: [0, 100] as [number, number],
+        yDomain: [0, 1] as [number, number],
+      };
+    }
+
+    const factor = unitMode === 'hour' ? 1 / 3600 : 1;
+    const digits = unitMode === 'hour' ? 4 : 2;
+
+    const points: ScatterPoint[] = records.map((rec) => {
+      const sec = getActiveAllowSec(rec, scatterVariant);
+      return {
+        id: rec.id,
+        assyNo: rec.params.assyNo,
+        customer: rec.params.customer || '-',
+        cct: Number(rec.params.masterCct) || 0,
+        umh: Number((sec * factor).toFixed(digits)),
+        lot: getEffectiveLot(rec.params.lot),
+        record: rec,
+      };
+    });
+
+    let sumCct = 0;
+    let sumUmh = 0;
+    let minCct = Number.POSITIVE_INFINITY;
+    let maxCct = Number.NEGATIVE_INFINITY;
+    let minUmh = Number.POSITIVE_INFINITY;
+    let maxUmh = Number.NEGATIVE_INFINITY;
+
+    points.forEach((p) => {
+      sumCct += p.cct;
+      sumUmh += p.umh;
+      if (p.cct < minCct) minCct = p.cct;
+      if (p.cct > maxCct) maxCct = p.cct;
+      if (p.umh < minUmh) minUmh = p.umh;
+      if (p.umh > maxUmh) maxUmh = p.umh;
+    });
+
+    const avgCct = Math.round(sumCct / points.length);
+    const avgUmh = Number((sumUmh / points.length).toFixed(digits));
+
+    const cctSpan = Math.max(20, maxCct - minCct);
+    const umhSpan = Math.max(unitMode === 'hour' ? 0.04 : 120, maxUmh - minUmh);
+
+    const cctTol = Math.max(5, Math.round(cctSpan * 0.06));
+    const umhTol = Number(
+      Math.max(unitMode === 'hour' ? 0.005 : 15, umhSpan * 0.08).toFixed(digits)
+    );
+
+    const xPad = Math.max(5, Math.ceil(cctSpan * 0.1));
+    const yPad = umhSpan * 0.12;
+    const xMin = Math.max(0, Math.floor(minCct - xPad));
+    const xMax = Math.ceil(maxCct + xPad);
+    const yMin = Math.max(0, Number((minUmh - yPad).toFixed(digits)));
+    const yMax = Number((maxUmh + yPad).toFixed(digits));
+
+    return {
+      points,
+      avgCct,
+      avgUmh,
+      minCct: Number.isFinite(minCct) ? minCct : 0,
+      maxCct: Number.isFinite(maxCct) ? maxCct : 0,
+      cctTol,
+      umhTol,
+      xDomain: [xMin, xMax] as [number, number],
+      yDomain: [yMin, yMax] as [number, number],
+    };
+  }, [records, unitMode, scatterVariant]);
+
+  const scatterColor = scatterVariant === 'reg' ? '#1E3A8A' : '#047857';
 
   const capabilities = [
     {
@@ -730,6 +824,311 @@ export function HomeView({
           </>
         )}
       </section>
+
+      {/* XY Scatter: Persebaran Assy berdasarkan Jumlah CCT vs UMH */}
+      {records.length > 0 && (
+        <section className="glass-surface rounded-2xl p-6 space-y-5">
+          <div className="flex flex-col sm:flex-row sm:items-start justify-between gap-4 pb-4 border-b border-slate-200">
+            <div className="min-w-0">
+              <p className="text-[11px] font-semibold text-[#1E3A8A]">
+                散布図分析 · Persebaran Assy
+              </p>
+              <h2 className="text-lg font-bold text-slate-900 mt-0.5">
+                Persebaran Assy: Jumlah CCT vs UMH
+              </h2>
+              <p className="text-xs text-slate-500 mt-0.5">
+                Arahkan kursor pada titik untuk melihat daftar Assy yang berada pada rentang CCT &amp; UMH tersebut, atau klik titik untuk membuka detail.
+              </p>
+            </div>
+
+            <div className="flex items-center gap-2 shrink-0 self-start">
+              <div className="inline-flex items-center p-1 rounded-xl bg-slate-100 border border-slate-200">
+                <button
+                  type="button"
+                  onClick={() => setScatterVariant('reg')}
+                  className={`px-3 py-1 rounded-lg text-xs font-semibold transition-colors whitespace-nowrap cursor-pointer ${
+                    scatterVariant === 'reg'
+                      ? 'bg-white text-[#1E3A8A] shadow-xs'
+                      : 'text-slate-600 hover:text-slate-900'
+                  }`}
+                >
+                  UMH REG
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setScatterVariant('smv')}
+                  className={`px-3 py-1 rounded-lg text-xs font-semibold transition-colors whitespace-nowrap cursor-pointer ${
+                    scatterVariant === 'smv'
+                      ? 'bg-white text-[#047857] shadow-xs'
+                      : 'text-slate-600 hover:text-slate-900'
+                  }`}
+                >
+                  UMH SMV
+                </button>
+              </div>
+
+              <span className="hidden sm:block h-5 w-px bg-slate-200" aria-hidden="true" />
+
+              <div className="inline-flex items-center p-1 rounded-xl bg-slate-100 border border-slate-200">
+                <button
+                  type="button"
+                  onClick={() => setUnitMode('hour')}
+                  className={`px-3 py-1 rounded-lg text-xs font-semibold transition-colors whitespace-nowrap cursor-pointer ${
+                    unitMode === 'hour'
+                      ? 'bg-white text-slate-900 shadow-xs'
+                      : 'text-slate-600 hover:text-slate-900'
+                  }`}
+                >
+                  Hour
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setUnitMode('sec')}
+                  className={`px-3 py-1 rounded-lg text-xs font-semibold transition-colors whitespace-nowrap cursor-pointer ${
+                    unitMode === 'sec'
+                      ? 'bg-white text-slate-900 shadow-xs'
+                      : 'text-slate-600 hover:text-slate-900'
+                  }`}
+                >
+                  Sec
+                </button>
+              </div>
+            </div>
+          </div>
+
+          <div className="flex flex-wrap items-center justify-between gap-x-6 gap-y-2 text-xs text-slate-600">
+            <div className="flex flex-wrap items-center gap-x-5 gap-y-1.5 font-mono-num">
+              <span>
+                <span className="text-slate-400">Titik Data:</span>{' '}
+                <strong className="text-slate-900">{scatterAnalytics.points.length} Assy</strong>
+              </span>
+              <span>
+                <span className="text-slate-400">Rentang CCT:</span>{' '}
+                <strong className="text-slate-900">
+                  {scatterAnalytics.minCct} – {scatterAnalytics.maxCct} CCT
+                </strong>
+              </span>
+              <span>
+                <span className="text-slate-400">Avg CCT:</span>{' '}
+                <strong className="text-slate-900">{scatterAnalytics.avgCct} CCT</strong>
+              </span>
+              <span>
+                <span className="text-slate-400">
+                  Avg UMH {scatterVariant.toUpperCase()}:
+                </span>{' '}
+                <strong style={{ color: scatterColor }}>
+                  {scatterAnalytics.avgUmh.toFixed(unitDigits)} {unitSuffix}
+                </strong>
+              </span>
+            </div>
+
+            <div className="flex items-center gap-4 text-[11px] text-slate-500">
+              <span className="inline-flex items-center gap-1.5">
+                <span
+                  className="w-2.5 h-2.5 rounded-full"
+                  style={{ backgroundColor: scatterColor }}
+                  aria-hidden="true"
+                />
+                Assy ({scatterVariant.toUpperCase()})
+              </span>
+              <span className="inline-flex items-center gap-1.5">
+                <span className="w-3 border-t border-dashed border-slate-400" aria-hidden="true" />
+                Garis Rata-Rata Kuadran
+              </span>
+            </div>
+          </div>
+
+          <div className="h-[340px] w-full">
+            <ResponsiveContainer width="100%" height="100%">
+              <ScatterChart margin={{ top: 14, right: 24, left: 10, bottom: 22 }}>
+                <CartesianGrid strokeDasharray="3 3" stroke="#E2E8F0" />
+                <XAxis
+                  type="number"
+                  dataKey="cct"
+                  name="Jumlah CCT"
+                  domain={scatterAnalytics.xDomain}
+                  tick={{ fontSize: 11, fill: '#64748B' }}
+                  axisLine={{ stroke: '#CBD5E1' }}
+                  tickLine={false}
+                  label={{
+                    value: 'Jumlah CCT',
+                    position: 'insideBottom',
+                    offset: -12,
+                    fill: '#475569',
+                    fontSize: 11,
+                    fontWeight: 600,
+                  }}
+                />
+                <YAxis
+                  type="number"
+                  dataKey="umh"
+                  name={`UMH ${scatterVariant.toUpperCase()}`}
+                  domain={scatterAnalytics.yDomain}
+                  width={68}
+                  tick={{ fontSize: 11, fill: '#64748B' }}
+                  axisLine={{ stroke: '#CBD5E1' }}
+                  tickLine={false}
+                  tickFormatter={(val: number) =>
+                    unitMode === 'hour' ? val.toFixed(3) : val.toFixed(0)
+                  }
+                  label={{
+                    value: `UMH ${scatterVariant.toUpperCase()} (${unitSuffix})`,
+                    angle: -90,
+                    position: 'insideLeft',
+                    offset: 4,
+                    style: { textAnchor: 'middle', fill: '#475569', fontSize: 11, fontWeight: 600 },
+                  }}
+                />
+                <ReferenceLine
+                  x={scatterAnalytics.avgCct}
+                  stroke="#94A3B8"
+                  strokeDasharray="4 4"
+                  label={{
+                    value: `Avg ${scatterAnalytics.avgCct} CCT`,
+                    position: 'insideTopRight',
+                    fill: '#64748B',
+                    fontSize: 10,
+                  }}
+                />
+                <ReferenceLine
+                  y={scatterAnalytics.avgUmh}
+                  stroke="#94A3B8"
+                  strokeDasharray="4 4"
+                  label={{
+                    value: `Avg ${scatterAnalytics.avgUmh.toFixed(unitDigits)} ${unitSuffix}`,
+                    position: 'insideTopLeft',
+                    fill: '#64748B',
+                    fontSize: 10,
+                  }}
+                />
+                <Tooltip
+                  cursor={{ strokeDasharray: '3 3', stroke: '#94A3B8' }}
+                  content={({ active, payload }) => {
+                    if (!active || !payload || payload.length === 0) return null;
+                    const pt = payload[0].payload as ScatterPoint | undefined;
+                    if (!pt) return null;
+
+                    const rangeCctMin = Math.max(0, pt.cct - scatterAnalytics.cctTol);
+                    const rangeCctMax = pt.cct + scatterAnalytics.cctTol;
+                    const rangeUmhMin = Math.max(
+                      0,
+                      Number((pt.umh - scatterAnalytics.umhTol).toFixed(unitDigits))
+                    );
+                    const rangeUmhMax = Number(
+                      (pt.umh + scatterAnalytics.umhTol).toFixed(unitDigits)
+                    );
+
+                    const inRange = scatterAnalytics.points
+                      .filter(
+                        (other) =>
+                          Math.abs(other.cct - pt.cct) <= scatterAnalytics.cctTol &&
+                          Math.abs(other.umh - pt.umh) <= scatterAnalytics.umhTol
+                      )
+                      .sort((a, b) => {
+                        if (a.id === pt.id) return -1;
+                        if (b.id === pt.id) return 1;
+                        const distA =
+                          Math.hypot(
+                            (a.cct - pt.cct) / Math.max(1, scatterAnalytics.cctTol),
+                            (a.umh - pt.umh) / Math.max(0.0001, scatterAnalytics.umhTol)
+                          );
+                        const distB =
+                          Math.hypot(
+                            (b.cct - pt.cct) / Math.max(1, scatterAnalytics.cctTol),
+                            (b.umh - pt.umh) / Math.max(0.0001, scatterAnalytics.umhTol)
+                          );
+                        return distA - distB;
+                      });
+
+                    const visibleItems = inRange.slice(0, 7);
+                    const overflowCount = Math.max(0, inRange.length - visibleItems.length);
+
+                    return (
+                      <div className="bg-white border border-slate-200 rounded-xl shadow-lg p-3 text-xs space-y-2 min-w-[265px] max-w-[340px]">
+                        <div className="pb-1.5 border-b border-slate-100">
+                          <div className="flex items-center justify-between gap-3">
+                            <p className="font-bold text-slate-900">
+                              Assy pada Rentang Titik Ini
+                            </p>
+                            <span className="font-mono-num text-[11px] font-semibold text-[#1E3A8A] shrink-0">
+                              {inRange.length} Assy
+                            </span>
+                          </div>
+                          <p className="text-[11px] font-mono-num text-slate-500 mt-0.5">
+                            {rangeCctMin}–{rangeCctMax} CCT · {rangeUmhMin.toFixed(unitDigits)}–
+                            {rangeUmhMax.toFixed(unitDigits)} {unitSuffix}
+                          </p>
+                        </div>
+
+                        <div className="space-y-1.5">
+                          {visibleItems.map((item) => {
+                            const isPrimary = item.id === pt.id;
+                            return (
+                              <div
+                                key={item.id}
+                                className={`flex items-start justify-between gap-3 px-2 py-1 rounded-lg ${
+                                  isPrimary ? 'bg-slate-100/90' : 'bg-transparent'
+                                }`}
+                              >
+                                <div className="min-w-0">
+                                  <p className="font-mono-num font-bold text-slate-900 truncate flex items-center gap-1.5">
+                                    <span
+                                      className="w-1.5 h-1.5 rounded-full shrink-0"
+                                      style={{
+                                        backgroundColor: isPrimary ? scatterColor : '#94A3B8',
+                                      }}
+                                    />
+                                    <span className="truncate">{item.assyNo}</span>
+                                  </p>
+                                  <p className="text-[10px] text-slate-500 truncate pl-3">
+                                    {item.customer} · LOT {item.lot}
+                                  </p>
+                                </div>
+                                <div className="text-right font-mono-num shrink-0">
+                                  <p
+                                    className="font-semibold"
+                                    style={{ color: isPrimary ? scatterColor : '#334155' }}
+                                  >
+                                    {item.umh.toFixed(unitDigits)} {unitSuffix}
+                                  </p>
+                                  <p className="text-[10px] text-slate-500">{item.cct} CCT</p>
+                                </div>
+                              </div>
+                            );
+                          })}
+
+                          {overflowCount > 0 && (
+                            <p className="text-[11px] text-slate-500 font-medium pl-2 pt-0.5">
+                              +{overflowCount} Assy lainnya di rentang ini
+                            </p>
+                          )}
+                        </div>
+
+                        <p className="text-[10px] text-[#1E3A8A] pt-1 border-t border-slate-100">
+                          Klik titik untuk membuka detail {pt.assyNo}
+                        </p>
+                      </div>
+                    );
+                  }}
+                />
+                <Scatter
+                  name={`Assy (${scatterVariant.toUpperCase()})`}
+                  data={scatterAnalytics.points}
+                  fill={scatterColor}
+                  fillOpacity={0.85}
+                  stroke="#FFFFFF"
+                  strokeWidth={1.5}
+                  className="cursor-pointer"
+                  onClick={(entry: { payload?: ScatterPoint; record?: AssyRecord }) => {
+                    const rec = entry?.payload?.record ?? entry?.record;
+                    if (rec) onOpenDetail(rec);
+                  }}
+                />
+              </ScatterChart>
+            </ResponsiveContainer>
+          </div>
+        </section>
+      )}
 
       {/* Bento Capability Strip (4 columns) */}
       <section className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-4 gap-4">

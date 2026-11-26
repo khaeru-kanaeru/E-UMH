@@ -3,42 +3,63 @@ import {
   FileSpreadsheet,
   Grid3X3,
   History,
+  Layers,
   Pencil,
+  RefreshCw,
   RotateCcw,
+  Save,
   Search,
   Upload,
   X,
 } from 'lucide-react';
-import { DEFAULT_STD_DATABASE } from '../data/defaultStdDb';
+import {
+  DEFAULT_STD_DATABASE,
+  SYS_DEFAULT_LOT_PARAM_ID,
+  getDefaultLotFromStdDb,
+} from '../data/defaultStdDb';
 import {
   MasterChangeHistoryEntry,
   MasterChangeSource,
   StdDatabase,
 } from '../types/umh';
-import { MATRIX_CONFIGS, MatrixKey } from '../utils/masterDiffEngine';
+import {
+  MATRIX_CONFIGS,
+  MatrixKey,
+  computeStdParamsDiff,
+  createMasterChangeEntry,
+} from '../utils/masterDiffEngine';
 import {
   exportStdParamsTemplateXlsx,
   parseStdParamsExcelFile,
 } from '../utils/stdExcelHelper';
+import { loadLastPicName } from '../utils/storage';
 import { ActionMenu } from './ActionMenu';
 import { StdBulkEditModal } from './StdBulkEditModal';
 
 interface StdParamsViewProps {
   stdDb: StdDatabase;
   masterHistoryCount: number;
+  totalAssyCount?: number;
   currentUserName?: string;
   onCommitStdBulkEdit: (nextDb: StdDatabase, entries: MasterChangeHistoryEntry[]) => void;
   onOpenMasterHistory: (cat: 'std_params' | 'std_matrices') => void;
+  onApplyLotAndRefreshAll?: () => void;
 }
 
 export function StdParamsView({
   stdDb,
   masterHistoryCount,
+  totalAssyCount = 0,
   currentUserName,
   onCommitStdBulkEdit,
   onOpenMasterHistory,
+  onApplyLotAndRefreshAll,
 }: StdParamsViewProps) {
   const [draft, setDraft] = useState<StdDatabase>(() => structuredClone(stdDb));
+  const currentDefaultLot = useMemo(() => getDefaultLotFromStdDb(draft), [draft]);
+  const [lotInputStr, setLotInputStr] = useState<string>(() =>
+    String(getDefaultLotFromStdDb(stdDb))
+  );
   const [viewMode, setViewMode] = useState<'substeps' | 'matrices'>('substeps');
   const [selectedSheet, setSelectedSheet] = useState<string>('ALL');
   const [searchParam, setSearchParam] = useState<string>('');
@@ -61,11 +82,76 @@ export function StdParamsView({
 
   useEffect(() => {
     setDraft(structuredClone(stdDb));
+    setLotInputStr(String(getDefaultLotFromStdDb(stdDb)));
   }, [stdDb]);
 
   const showToast = (msg: string) => {
     setToast(msg);
     setTimeout(() => setToast(null), 4000);
+  };
+
+  const parsedLotInput = Math.round(Number(lotInputStr));
+  const isLotValid = lotInputStr.trim() !== '' && Number.isFinite(parsedLotInput) && parsedLotInput >= 1;
+  const isLotDirty = isLotValid && parsedLotInput !== currentDefaultLot;
+
+  const commitDefaultLotValue = (nextLotValue: number): boolean => {
+    if (!Number.isFinite(nextLotValue) || nextLotValue < 1) {
+      setErrorMsg('Nilai LOT Default harus berupa angka bulat minimal 1.');
+      return false;
+    }
+    const cleanVal = Math.max(1, Math.round(nextLotValue));
+    if (cleanVal === currentDefaultLot) return true;
+
+    const nextDb = structuredClone(draft);
+    const existingIdx = nextDb.params.findIndex((p) => p.id === SYS_DEFAULT_LOT_PARAM_ID);
+    if (existingIdx >= 0) {
+      nextDb.params[existingIdx] = { ...nextDb.params[existingIdx], val: cleanVal };
+    } else {
+      nextDb.params.unshift({
+        id: SYS_DEFAULT_LOT_PARAM_ID,
+        sheet: 'Kebijakan Umum',
+        stage: 'Kebijakan LOT',
+        name: 'LOT Default Produksi (pcs/lot)',
+        basis: 'pcs/lot',
+        val: cleanVal,
+      });
+    }
+
+    const diffs = computeStdParamsDiff(draft.params, nextDb.params);
+    const pic = (currentUserName || loadLastPicName() || 'PIC').trim();
+    const entry = createMasterChangeEntry({
+      responsibleName: pic,
+      category: 'std_params',
+      source: 'manual_edit',
+      note: `Perubahan kebijakan LOT Default: ${currentDefaultLot} -> ${cleanVal} pcs/lot`,
+      totalItemsCount: nextDb.params.length,
+      changes: diffs,
+    });
+    setErrorMsg(null);
+    onCommitStdBulkEdit(nextDb, diffs.length > 0 ? [entry] : []);
+    showToast(
+      `LOT Default diperbarui menjadi ${cleanVal} pcs/lot oleh ${pic}. Klik "Terapkan ke Semua Assy" untuk menyeragamkan seluruh database.`
+    );
+    return true;
+  };
+
+  const handleSaveDefaultLot = () => {
+    if (!isLotValid) {
+      setErrorMsg('Masukkan nilai LOT Default yang valid (minimal 1).');
+      return;
+    }
+    commitDefaultLotValue(parsedLotInput);
+  };
+
+  const handleApplyLotAndRefresh = () => {
+    if (isLotDirty) {
+      const ok = commitDefaultLotValue(parsedLotInput);
+      if (!ok) return;
+    } else if (!isLotValid) {
+      setErrorMsg('Masukkan nilai LOT Default yang valid (minimal 1).');
+      return;
+    }
+    onApplyLotAndRefreshAll?.();
   };
 
   const sheets = useMemo(
@@ -256,6 +342,76 @@ export function StdParamsView({
                 },
               ]}
             />
+          </div>
+        </div>
+
+        {/* Policy Strip: Pengaturan LOT Default & Terapkan ke Semua Assy */}
+        <div className="mt-4 px-4 py-3 rounded-xl bg-slate-50 border border-slate-200 flex flex-col lg:flex-row lg:items-center justify-between gap-3">
+          <div className="flex items-start gap-2.5 min-w-0">
+            <div className="w-8 h-8 rounded-lg bg-[#1E3A8A]/10 text-[#1E3A8A] flex items-center justify-center shrink-0 mt-0.5">
+              <Layers className="w-4 h-4" />
+            </div>
+            <div className="min-w-0">
+              <p className="text-xs font-bold text-slate-900">
+                Kebijakan LOT Default Produksi
+              </p>
+              <p className="text-[11px] text-slate-500 mt-0.5 leading-relaxed">
+                Otomatis dipakai saat input Assy baru dan dapat langsung diterapkan ke seluruh
+                Database Assy saat terjadi perubahan kebijakan LOT.
+              </p>
+            </div>
+          </div>
+
+          <div className="flex flex-wrap items-center gap-2 shrink-0">
+            <div className="inline-flex items-center rounded-xl bg-white border border-slate-300 overflow-hidden focus-within:border-[#1E3A8A] focus-within:ring-2 focus-within:ring-[#1E3A8A]/20">
+              <label
+                htmlFor="std-default-lot-input"
+                className="px-2.5 py-1.5 bg-slate-100 border-r border-slate-200 text-[11px] font-semibold text-slate-600 whitespace-nowrap"
+              >
+                LOT Default
+              </label>
+              <input
+                id="std-default-lot-input"
+                type="number"
+                min={1}
+                step={1}
+                value={lotInputStr}
+                onChange={(e) => setLotInputStr(e.target.value)}
+                onKeyDown={(e) => {
+                  if (e.key === 'Enter' && isLotDirty) {
+                    e.preventDefault();
+                    handleSaveDefaultLot();
+                  }
+                }}
+                className="w-20 px-2.5 py-1.5 text-xs font-mono-num font-bold text-slate-900 text-right focus:outline-none tabular-nums"
+              />
+              <span className="pr-2.5 text-[11px] text-slate-500 whitespace-nowrap">pcs/lot</span>
+            </div>
+
+            <button
+              type="button"
+              disabled={!isLotDirty}
+              onClick={handleSaveDefaultLot}
+              className="inline-flex items-center gap-1.5 px-3 py-2 rounded-xl bg-white border border-slate-200 text-xs font-semibold text-slate-800 hover:bg-slate-100 disabled:opacity-45 disabled:cursor-not-allowed transition-colors whitespace-nowrap shrink-0 cursor-pointer"
+            >
+              <Save className="w-3.5 h-3.5 text-[#1E3A8A]" />
+              <span>Simpan LOT</span>
+            </button>
+
+            {onApplyLotAndRefreshAll && (
+              <button
+                type="button"
+                disabled={totalAssyCount === 0 || !isLotValid}
+                onClick={handleApplyLotAndRefresh}
+                className="inline-flex items-center gap-1.5 px-3.5 py-2 rounded-xl bg-[#047857] text-white text-xs font-semibold hover:bg-[#065F46] disabled:opacity-45 disabled:cursor-not-allowed transition-colors whitespace-nowrap shrink-0 cursor-pointer shadow-xs"
+              >
+                <RefreshCw className="w-3.5 h-3.5" />
+                <span>
+                  Terapkan &amp; Refresh Semua
+                  {totalAssyCount > 0 ? ` (${totalAssyCount})` : ''}
+                </span>
+              </button>
+            )}
           </div>
         </div>
 

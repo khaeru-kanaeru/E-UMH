@@ -30,7 +30,7 @@ import { RefreshHistoryModal } from './components/RefreshHistoryModal';
 import { RefreshHistoryPdfModal } from './components/RefreshHistoryPdfModal';
 import { RefreshUmhModal } from './components/RefreshUmhModal';
 import { StdParamsView } from './components/StdParamsView';
-import { DEFAULT_STD_DATABASE } from './data/defaultStdDb';
+import { DEFAULT_STD_DATABASE, getDefaultLotFromStdDb } from './data/defaultStdDb';
 import { calculateUmh } from './engine/umhCalculator';
 import {
   FIREBASE_PROJECT_ID,
@@ -60,6 +60,7 @@ import {
   findDuplicateAssyInCloud,
   getGoogleUserDisplayName,
   initializeCloudWorkspace,
+  isOfflineOrNetworkError,
   isRecycleBinPermissionError,
   moveAssyRecordToRecycleBinInCloud,
   moveManyRefreshHistoryToRecycleBinInCloud,
@@ -197,6 +198,10 @@ export default function App() {
   } | null>(null);
   const [refreshModalOpen, setRefreshModalOpen] = useState(false);
   const [refreshModalRecords, setRefreshModalRecords] = useState<AssyRecord[]>([]);
+  const [refreshModalOptions, setRefreshModalOptions] = useState<{
+    applyDefaultLot: boolean;
+    selectAll: boolean;
+  }>({ applyDefaultLot: false, selectAll: false });
   const [historyModalOpen, setHistoryModalOpen] = useState(false);
   const [masterHistoryModal, setMasterHistoryModal] = useState<{
     open: boolean;
@@ -268,6 +273,13 @@ export default function App() {
     const msg = err instanceof Error ? err.message : String(err);
     if (isRecycleBinPermissionError(err)) {
       setRecycleBinNeedsRulesPublish(true);
+      return;
+    }
+    if (isOfflineOrNetworkError(err)) {
+      setCloudReady(false);
+      setCloudNotice(
+        'Koneksi ke server database sedang offline atau lambat. Anda tetap dapat bekerja dengan data lokal — klik "Sinkronkan Ulang" saat jaringan stabil.'
+      );
       return;
     }
     if (msg.includes('Quota exceeded')) {
@@ -466,6 +478,17 @@ export default function App() {
       unsubs.forEach((fn) => fn());
     };
   }, [authReady, authUser, cloudRetryNonce, handleCloudMutationError, loadCloudAssyPage]);
+
+  // Automatically retry cloud sync when browser regains connectivity
+  useEffect(() => {
+    if (!authUser || !authUser.emailVerified || cloudReady) return;
+    const handleOnline = () => {
+      setCloudNotice(null);
+      setCloudRetryNonce((n) => n + 1);
+    };
+    window.addEventListener('online', handleOnline);
+    return () => window.removeEventListener('online', handleOnline);
+  }, [authUser, cloudReady]);
 
   const handleGoogleSignIn = async () => {
     setAuthBusy(true);
@@ -706,10 +729,17 @@ export default function App() {
     }
   };
 
-  const handleOpenRefreshModal = async () => {
+  const handleOpenRefreshModal = async (options?: {
+    applyDefaultLot?: boolean;
+    selectAll?: boolean;
+  }) => {
     setRefreshNotice(null);
     const allRecs = await handleFetchAllAssyRecords();
     setRefreshModalRecords(allRecs);
+    setRefreshModalOptions({
+      applyDefaultLot: Boolean(options?.applyDefaultLot),
+      selectAll: Boolean(options?.selectAll),
+    });
     setRefreshModalOpen(true);
   };
 
@@ -1467,15 +1497,31 @@ export default function App() {
 
       {cloudNotice && (
         <div className="max-w-[1600px] w-full mx-auto px-4 sm:px-6 pt-3 print:hidden">
-          <div className="px-4 py-2.5 rounded-xl bg-amber-50 border border-amber-200 text-xs text-amber-900 flex items-center justify-between gap-3">
+          <div className="px-4 py-2.5 rounded-xl bg-amber-50 border border-amber-200 text-xs text-amber-900 flex flex-wrap items-center justify-between gap-3">
             <span>{cloudNotice}</span>
-            <button
-              type="button"
-              onClick={() => setCloudNotice(null)}
-              className="text-amber-700 hover:text-amber-950 cursor-pointer"
-            >
-              <X className="w-3.5 h-3.5" />
-            </button>
+            <div className="flex items-center gap-2 shrink-0">
+              {authUser && !cloudReady && (
+                <button
+                  type="button"
+                  onClick={() => {
+                    setCloudNotice(null);
+                    setCloudRetryNonce((n) => n + 1);
+                  }}
+                  className="inline-flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg bg-[#1E3A8A] text-white text-xs font-semibold hover:bg-[#172E6E] cursor-pointer whitespace-nowrap"
+                >
+                  <RefreshCw className="w-3.5 h-3.5" />
+                  <span>Sinkronkan Ulang</span>
+                </button>
+              )}
+              <button
+                type="button"
+                onClick={() => setCloudNotice(null)}
+                className="text-amber-700 hover:text-amber-950 cursor-pointer"
+                aria-label="Tutup pemberitahuan"
+              >
+                <X className="w-3.5 h-3.5" />
+              </button>
+            </div>
           </div>
         </div>
       )}
@@ -1671,6 +1717,13 @@ export default function App() {
                   layout: 'summary',
                 })
               }
+              onOpenSinglePdfPreview={(rec) =>
+                setPdfPreview({
+                  records: [rec],
+                  lang: 'id',
+                  layout: 'summary',
+                })
+              }
               onDeleteRecord={handleDeleteRecord}
               onImportJson={(payloads) => void handleImportJson(payloads)}
               onStartWizard={() => {
@@ -1684,6 +1737,7 @@ export default function App() {
           {activeTab === 'std_params' && (
             <StdParamsView
               stdDb={stdDb}
+              totalAssyCount={totalAssyCount}
               currentUserName={currentUserName || undefined}
               masterHistoryCount={
                 masterChangeHistory.filter(
@@ -1693,6 +1747,9 @@ export default function App() {
               onCommitStdBulkEdit={handleCommitStdBulkEdit}
               onOpenMasterHistory={(cat) =>
                 setMasterHistoryModal({ open: true, category: cat })
+              }
+              onApplyLotAndRefreshAll={() =>
+                void handleOpenRefreshModal({ applyDefaultLot: true, selectAll: true })
               }
             />
           )}
@@ -1738,6 +1795,7 @@ export default function App() {
           autoCutList={autoCutList}
           feederList={feederList}
           cotMatrix={stdDb.cotMatrix}
+          defaultLot={getDefaultLotFromStdDb(stdDb)}
           onCheckDuplicateAssy={handleCheckDuplicateAssy}
           onClose={() => {
             setWizardOpen(false);
@@ -1819,6 +1877,8 @@ export default function App() {
           autoCutList={autoCutList}
           feederList={feederList}
           lockedPicName={currentUserName || undefined}
+          initialApplyDefaultLot={refreshModalOptions.applyDefaultLot}
+          initialSelectAll={refreshModalOptions.selectAll}
           onCompleteRefresh={handleCompleteRefresh}
           onPrintPdf={(entry) => setPdfHistoryEntry(entry)}
           onCancelAll={() => {

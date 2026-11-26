@@ -77,6 +77,7 @@ interface InputWizardModalProps {
   autoCutList: AutoCutItem[];
   feederList: FeederItem[];
   cotMatrix?: number[][];
+  defaultLot?: number;
   onCheckDuplicateAssy?: (assyNo: string, excludeId?: string) => Promise<DuplicateAssyMatch | null>;
   onClose: () => void;
   onSaveAndCalculate: (payload: AssyInputPayload) => void;
@@ -87,10 +88,16 @@ export function InputWizardModal({
   autoCutList,
   feederList,
   cotMatrix,
+  defaultLot = DEFAULT_LOT_SIZE,
   onCheckDuplicateAssy,
   onClose,
   onSaveAndCalculate,
 }: InputWizardModalProps) {
+  const effectiveDefaultLot =
+    typeof defaultLot === 'number' && Number.isFinite(defaultLot) && defaultLot >= 1
+      ? Math.max(1, Math.round(defaultLot))
+      : DEFAULT_LOT_SIZE;
+
   const [assyNo, setAssyNo] = useState<string>(initialPayload?.params.assyNo ?? '');
   const [customer, setCustomer] = useState<string>(initialPayload?.params.customer ?? '');
   const [masterCctStr, setMasterCctStr] = useState<string>(
@@ -101,7 +108,7 @@ export function InputWizardModal({
   const [lotStr, setLotStr] = useState<string>(
     initialPayload?.params.lot && initialPayload.params.lot > 0
       ? String(initialPayload.params.lot)
-      : String(DEFAULT_LOT_SIZE)
+      : String(effectiveDefaultLot)
   );
 
   // Preserve existing allowance/difficulty when editing; new Assy always starts at 0 / 'none'
@@ -181,7 +188,7 @@ export function InputWizardModal({
     const initLot =
       initialPayload?.params.lot && initialPayload.params.lot > 0
         ? String(initialPayload.params.lot)
-        : String(DEFAULT_LOT_SIZE);
+        : String(effectiveDefaultLot);
     const initAsm = initialPayload?.assemblyComponents ?? {
       markerQty: 0,
       spotTapeQty: 0,
@@ -457,7 +464,7 @@ export function InputWizardModal({
           ? parsed.params.lot
           : parsedLot > 0
           ? parsedLot
-          : DEFAULT_LOT_SIZE;
+          : effectiveDefaultLot;
 
       const hasMarkerFromSheet = Boolean(
         parsed.assemblyComponents?.markerQty && parsed.assemblyComponents.markerQty > 0
@@ -820,7 +827,10 @@ export function InputWizardModal({
 
         <label className="block space-y-1">
           <span className="text-xs font-semibold text-slate-700">
-            LOT <span className="text-[11px] font-normal text-slate-400">(Default 15)</span>
+            LOT{' '}
+            <span className="text-[11px] font-normal text-slate-400">
+              (Default {effectiveDefaultLot})
+            </span>
           </span>
           <input
             ref={lotInputRef}

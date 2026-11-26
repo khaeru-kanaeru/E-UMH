@@ -2,7 +2,11 @@ import {
   calculateCotTapingV2Summary,
   resolveDifficultyPercentage,
 } from '../data/cotMasterV2';
-import { PROCESS_DIFF_MAP, PROCESS_META } from '../data/defaultStdDb';
+import {
+  PROCESS_DIFF_MAP,
+  PROCESS_META,
+  getDefaultLotFromStdDb,
+} from '../data/defaultStdDb';
 import {
   AllowanceMode,
   AssyInputPayload,
@@ -29,10 +33,14 @@ const JOINT_CODES_LIST = [
 
 const JOINT_CODE_SET = new Set(JOINT_CODES_LIST);
 
-export function getEffectiveLot(lotInput?: number): number {
+export function getEffectiveLot(lotInput?: number, fallbackLot = DEFAULT_LOT_SIZE): number {
+  const safeFallback =
+    typeof fallbackLot === 'number' && Number.isFinite(fallbackLot) && fallbackLot >= 1
+      ? Math.max(1, Math.round(fallbackLot))
+      : DEFAULT_LOT_SIZE;
   return typeof lotInput === 'number' && Number.isFinite(lotInput) && lotInput > 0
     ? Math.max(1, lotInput)
-    : DEFAULT_LOT_SIZE;
+    : safeFallback;
 }
 
 export function getAllowanceModeLabel(
@@ -59,8 +67,12 @@ export function getAllowSecForMode(
   return allowByProcessSec;
 }
 
-export function computeLotMetrics(lotInput?: number, excludeAutoCut = false): LotMetrics {
-  const effLot = getEffectiveLot(lotInput);
+export function computeLotMetrics(
+  lotInput?: number,
+  excludeAutoCut = false,
+  fallbackLot = DEFAULT_LOT_SIZE
+): LotMetrics {
+  const effLot = getEffectiveLot(lotInput, fallbackLot);
   return {
     monthlyQty: 0,
     dailyQty: 0,
@@ -212,7 +224,8 @@ function executeVariant(
     terminalRatios: ratios = {},
   } = payload;
 
-  const lotMetrics = computeLotMetrics(params.lot, excludeAutoCut);
+  const policyDefaultLot = getDefaultLotFromStdDb(stdDb);
+  const lotMetrics = computeLotMetrics(params.lot, excludeAutoCut, policyDefaultLot);
   const lot = lotMetrics.effectiveLot;
   const isAcLotActive = lotMetrics.isAutoCutActive;
   const cctMaster = params.masterCct || 0;
@@ -1192,7 +1205,8 @@ export function calculateUmh(
   feederList: FeederItem[]
 ): CalculationResult {
   const { ppcsList: ppcs } = payload;
-  const lotMetrics = computeLotMetrics(payload.params.lot);
+  const policyDefaultLot = getDefaultLotFromStdDb(stdDb);
+  const lotMetrics = computeLotMetrics(payload.params.lot, false, policyDefaultLot);
   const twistBundlesCount = groupTwistBundlesCount(ppcs);
 
   // REG: Standard calculation with Autocutting active

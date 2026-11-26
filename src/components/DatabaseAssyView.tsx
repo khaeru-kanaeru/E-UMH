@@ -1,5 +1,6 @@
 import { useMemo, useRef, useState } from 'react';
 import {
+  AlertTriangle,
   ChevronLeft,
   ChevronRight,
   Download,
@@ -10,6 +11,7 @@ import {
   History,
   Loader2,
   Plus,
+  Printer,
   RefreshCw,
   Search,
   Trash2,
@@ -25,7 +27,8 @@ import {
   getVariantResult,
 } from '../engine/umhCalculator';
 import { AssyInputPayload, AssyRecord } from '../types/umh';
-import { exportDatabaseAssyExcel } from '../utils/excelExporter';
+import { exportDatabaseAssyExcel, exportUmhExcel } from '../utils/excelExporter';
+import { exportSingleAssyPdf } from '../utils/pdfExporter';
 
 import { ActionMenu } from './ActionMenu';
 import { BatchExportModal } from './BatchExportModal';
@@ -56,6 +59,7 @@ interface DatabaseAssyViewProps {
   onOpenRecycleBin: () => void;
   onOpenDetail: (record: AssyRecord) => void;
   onOpenDailySummaryPdf: (records: AssyRecord[]) => void;
+  onOpenSinglePdfPreview?: (record: AssyRecord) => void;
   onDeleteRecord: (id: string) => void;
   onImportJson: (payloads: AssyInputPayload[]) => void;
   onStartWizard: () => void;
@@ -87,12 +91,13 @@ export function DatabaseAssyView({
   onOpenRecycleBin,
   onOpenDetail,
   onOpenDailySummaryPdf,
+  onOpenSinglePdfPreview,
   onDeleteRecord,
   onImportJson,
   onStartWizard,
 }: DatabaseAssyViewProps) {
   const [searchQuery, setSearchQuery] = useState('');
-  const [confirmDeleteId, setConfirmDeleteId] = useState<string | null>(null);
+  const [pendingDeleteRecord, setPendingDeleteRecord] = useState<AssyRecord | null>(null);
   const [feedback, setFeedback] = useState<string | null>(null);
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
   const [batchModalOpen, setBatchModalOpen] = useState(false);
@@ -236,6 +241,18 @@ export function DatabaseAssyView({
     onOpenDailySummaryPdf(targets);
   };
 
+  const handleExportSingleRowExcel = (rec: AssyRecord) => {
+    exportUmhExcel(rec, rec.params.allowanceMode, 'id', difficultyMatrix);
+    setFeedback(`File Excel untuk ${rec.params.assyNo} berhasil diunduh.`);
+    setTimeout(() => setFeedback(null), 3500);
+  };
+
+  const handleExportSingleRowPdf = (rec: AssyRecord) => {
+    exportSingleAssyPdf(rec, rec.params.allowanceMode, 'summary', 'id', difficultyMatrix);
+    setFeedback(`File PDF ringkas untuk ${rec.params.assyNo} berhasil diunduh.`);
+    setTimeout(() => setFeedback(null), 3500);
+  };
+
   const handleRestoreJson = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     if (!file) return;
@@ -330,56 +347,60 @@ export function DatabaseAssyView({
           </div>
 
           <div className="flex flex-wrap items-center gap-2 shrink-0">
-            <button
-              type="button"
+            <ActionMenu
+              label={
+                selectedRecords.length > 0
+                  ? `Ekspor (${selectedRecords.length})`
+                  : 'Ekspor'
+              }
+              ariaLabel="Menu ekspor Excel, PDF Ringkas, dan Batch ZIP"
+              triggerIcon={isBulkLoading ? Loader2 : Download}
+              triggerIconClassName={
+                isBulkLoading ? 'animate-spin text-[#1E3A8A]' : 'text-[#1E3A8A]'
+              }
               disabled={effectiveTotalCount === 0 || isBulkLoading}
-              onClick={() => void handleOpenBatchModal()}
-              className="inline-flex items-center gap-1.5 px-3.5 py-2 rounded-xl bg-slate-900 text-white text-xs font-semibold hover:bg-slate-800 disabled:opacity-50 disabled:cursor-not-allowed transition-colors whitespace-nowrap shrink-0 cursor-pointer shadow-xs"
-            >
-              {isBulkLoading ? (
-                <Loader2 className="w-3.5 h-3.5 animate-spin text-blue-300" />
-              ) : (
-                <FolderArchive className="w-3.5 h-3.5 text-blue-300" />
-              )}
-              <span>
-                Batch Export (ZIP)
-                {selectedRecords.length > 0 ? ` · ${selectedRecords.length}` : ''}
-              </span>
-            </button>
-
-            <button
-              type="button"
-              disabled={effectiveTotalCount === 0 || isBulkLoading}
-              onClick={() => void handleOpenDailySummary()}
-              className="inline-flex items-center gap-1.5 px-3.5 py-2 rounded-xl bg-white border border-slate-200 text-xs font-semibold text-slate-800 hover:bg-blue-50 hover:border-blue-300 hover:text-[#1E3A8A] disabled:opacity-50 disabled:cursor-not-allowed transition-colors whitespace-nowrap shrink-0 cursor-pointer"
-            >
-              <FileText className="w-3.5 h-3.5 text-[#1E3A8A]" />
-              <span>
-                PDF Ringkas
-                {selectedRecords.length > 0
-                  ? ` (${selectedRecords.length})`
-                  : searchQuery.trim() && filteredRecords.length > 0
-                  ? ` (${filteredRecords.length})`
-                  : ''}
-              </span>
-            </button>
-
-            <button
-              type="button"
-              disabled={effectiveTotalCount === 0 || isBulkLoading}
-              onClick={() => void handleExportExcel()}
-              className="inline-flex items-center gap-1.5 px-3.5 py-2 rounded-xl bg-white border border-slate-200 text-xs font-semibold text-slate-800 hover:bg-emerald-50 hover:border-emerald-300 hover:text-[#047857] disabled:opacity-50 disabled:cursor-not-allowed transition-colors whitespace-nowrap shrink-0 cursor-pointer"
-            >
-              <FileSpreadsheet className="w-3.5 h-3.5 text-[#047857]" />
-              <span>
-                Ekspor Excel
-                {selectedRecords.length > 0
-                  ? ` (${selectedRecords.length})`
-                  : searchQuery.trim() && filteredRecords.length > 0
-                  ? ` (${filteredRecords.length})`
-                  : ''}
-              </span>
-            </button>
+              menuWidthClass="w-72"
+              items={[
+                {
+                  id: 'export_excel_all',
+                  label:
+                    selectedRecords.length > 0
+                      ? `Excel Gabungan (${selectedRecords.length} Assy)`
+                      : searchQuery.trim() && filteredRecords.length > 0
+                      ? `Excel Gabungan (${filteredRecords.length} hasil cari)`
+                      : 'Excel Gabungan (.xlsx)',
+                  description: 'Rekap multi-sheet + breakdown proses REG/SMV',
+                  icon: FileSpreadsheet,
+                  iconClassName: 'text-[#047857]',
+                  onClick: () => void handleExportExcel(),
+                },
+                {
+                  id: 'export_pdf_summary',
+                  label:
+                    selectedRecords.length > 0
+                      ? `Laporan Harian PDF (${selectedRecords.length} Assy)`
+                      : searchQuery.trim() && filteredRecords.length > 0
+                      ? `Laporan Harian PDF (${filteredRecords.length} hasil cari)`
+                      : 'Laporan Harian PDF Ringkas',
+                  description: 'Tabel rekapitulasi 21 item proses per Assy',
+                  icon: FileText,
+                  iconClassName: 'text-[#1E3A8A]',
+                  onClick: () => void handleOpenDailySummary(),
+                },
+                {
+                  id: 'export_batch_zip',
+                  label:
+                    selectedRecords.length > 0
+                      ? `Batch Export ZIP (${selectedRecords.length} Assy)`
+                      : 'Batch Export ZIP (Per Assy)',
+                  description: 'File terpisah per Assy (Excel, PDF, atau keduanya)',
+                  icon: FolderArchive,
+                  iconClassName: 'text-slate-700',
+                  dividerBefore: true,
+                  onClick: () => void handleOpenBatchModal(),
+                },
+              ]}
+            />
 
             <button
               type="button"
@@ -495,8 +516,16 @@ export function DatabaseAssyView({
             <div className="flex flex-wrap items-center gap-2">
               <button
                 type="button"
+                onClick={() => void handleExportExcel()}
+                className="inline-flex items-center gap-1.5 px-3 py-1 rounded-lg bg-white border border-emerald-300 text-[#047857] text-xs font-semibold hover:bg-emerald-50 cursor-pointer whitespace-nowrap"
+              >
+                <FileSpreadsheet className="w-3.5 h-3.5" />
+                <span>Excel ({selectedRecords.length})</span>
+              </button>
+              <button
+                type="button"
                 onClick={() => void handleOpenDailySummary()}
-                className="inline-flex items-center gap-1.5 px-3 py-1 rounded-lg bg-white border border-blue-300 text-[#1E3A8A] text-xs font-semibold hover:bg-blue-100 cursor-pointer"
+                className="inline-flex items-center gap-1.5 px-3 py-1 rounded-lg bg-white border border-blue-300 text-[#1E3A8A] text-xs font-semibold hover:bg-blue-100 cursor-pointer whitespace-nowrap"
               >
                 <FileText className="w-3.5 h-3.5" />
                 <span>PDF Ringkas ({selectedRecords.length})</span>
@@ -504,15 +533,15 @@ export function DatabaseAssyView({
               <button
                 type="button"
                 onClick={() => void handleOpenBatchModal()}
-                className="inline-flex items-center gap-1.5 px-3 py-1 rounded-lg bg-[#1E3A8A] text-white text-xs font-semibold hover:bg-[#172E6E] cursor-pointer"
+                className="inline-flex items-center gap-1.5 px-3 py-1 rounded-lg bg-[#1E3A8A] text-white text-xs font-semibold hover:bg-[#172E6E] cursor-pointer whitespace-nowrap"
               >
                 <FolderArchive className="w-3.5 h-3.5" />
-                <span>Batch Export ZIP ({selectedRecords.length})</span>
+                <span>Batch ZIP ({selectedRecords.length})</span>
               </button>
               <button
                 type="button"
                 onClick={() => setSelectedIds(new Set())}
-                className="px-2.5 py-1 rounded-lg text-xs font-semibold text-blue-700 hover:bg-blue-100 cursor-pointer"
+                className="px-2.5 py-1 rounded-lg text-xs font-semibold text-blue-700 hover:bg-blue-100 cursor-pointer whitespace-nowrap"
               >
                 Batalkan
               </button>
@@ -589,7 +618,6 @@ export function DatabaseAssyView({
                       smvCalc.totalAllowByProcessSec,
                       smvCalc.totalAllowByFinalSec
                     );
-                    const isConfirming = confirmDeleteId === rec.id;
                     const isSelected = activeSelectedIds.has(rec.id);
 
                     return (
@@ -679,48 +707,69 @@ export function DatabaseAssyView({
                             SMV {(smvAllowSec / 3600).toFixed(4)}
                           </div>
                         </td>
-                        <td className="py-3 px-4 text-right">
-                          <div className="inline-flex items-center justify-end gap-2">
+                        <td className="py-3 px-4 text-right whitespace-nowrap">
+                          <div className="inline-flex items-center justify-end gap-1.5">
                             <button
                               type="button"
                               onClick={() => onOpenDetail(rec)}
-                              className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-slate-900 text-white text-xs font-medium hover:bg-slate-800 transition-colors whitespace-nowrap cursor-pointer"
+                              className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-slate-900 text-white text-xs font-medium hover:bg-slate-800 transition-colors whitespace-nowrap shrink-0 cursor-pointer"
                             >
                               <ExternalLink className="w-3.5 h-3.5" />
                               <span>Buka</span>
                             </button>
 
-                            {isConfirming ? (
-                              <div className="inline-flex items-center gap-1">
-                                <button
-                                  type="button"
-                                  onClick={() => {
-                                    onDeleteRecord(rec.id);
-                                    setConfirmDeleteId(null);
-                                  }}
-                                  className="px-2.5 py-1.5 rounded-xl bg-red-600 text-white text-xs font-semibold hover:bg-red-700 cursor-pointer whitespace-nowrap"
-                                >
-                                  Ke Recycle Bin
-                                </button>
-                                <button
-                                  type="button"
-                                  onClick={() => setConfirmDeleteId(null)}
-                                  className="px-2 py-1.5 rounded-xl bg-slate-200 text-slate-700 text-xs font-medium hover:bg-slate-300 cursor-pointer"
-                                >
-                                  Batal
-                                </button>
-                              </div>
-                            ) : (
-                              <button
-                                type="button"
-                                onClick={() => setConfirmDeleteId(rec.id)}
-                                className="inline-flex items-center gap-1 px-2.5 py-1.5 rounded-xl bg-white border border-slate-200 text-xs font-medium text-red-600 hover:bg-red-50 transition-colors cursor-pointer"
-                                aria-label={`Hapus ${rec.params.assyNo}`}
-                              >
-                                <Trash2 className="w-3.5 h-3.5" />
-                                <span>Hapus</span>
-                              </button>
-                            )}
+                            <button
+                              type="button"
+                              onClick={() => handleExportSingleRowExcel(rec)}
+                              title={`Unduh Excel untuk ${rec.params.assyNo}`}
+                              aria-label={`Unduh Excel ${rec.params.assyNo}`}
+                              className="inline-flex items-center gap-1 px-2.5 py-1.5 rounded-xl bg-white border border-slate-200 text-xs font-semibold text-slate-700 hover:bg-emerald-50 hover:border-emerald-300 hover:text-[#047857] transition-colors whitespace-nowrap shrink-0 cursor-pointer"
+                            >
+                              <FileSpreadsheet className="w-3.5 h-3.5 text-[#047857]" />
+                              <span>Excel</span>
+                            </button>
+
+                            <button
+                              type="button"
+                              onClick={() => handleExportSingleRowPdf(rec)}
+                              title={`Unduh PDF ringkas untuk ${rec.params.assyNo}`}
+                              aria-label={`Unduh PDF ${rec.params.assyNo}`}
+                              className="inline-flex items-center gap-1 px-2.5 py-1.5 rounded-xl bg-white border border-slate-200 text-xs font-semibold text-slate-700 hover:bg-blue-50 hover:border-blue-300 hover:text-[#1E3A8A] transition-colors whitespace-nowrap shrink-0 cursor-pointer"
+                            >
+                              <FileText className="w-3.5 h-3.5 text-[#1E3A8A]" />
+                              <span>PDF</span>
+                            </button>
+
+                            <ActionMenu
+                              compact
+                              kebabVertical
+                              fixedPosition
+                              menuWidthClass="w-52"
+                              ariaLabel={`Opsi lainnya untuk ${rec.params.assyNo}`}
+                              items={[
+                                ...(onOpenSinglePdfPreview
+                                  ? [
+                                      {
+                                        id: 'preview_pdf',
+                                        label: 'Pratinjau Cetak PDF',
+                                        description: 'Buka tampilan cetak & ubah layout',
+                                        icon: Printer,
+                                        iconClassName: 'text-[#1E3A8A]',
+                                        onClick: () => onOpenSinglePdfPreview(rec),
+                                      },
+                                    ]
+                                  : []),
+                                {
+                                  id: 'delete_assy',
+                                  label: 'Hapus ke Recycle Bin',
+                                  description: 'Pindahkan Assy ini ke sampah',
+                                  icon: Trash2,
+                                  danger: true,
+                                  dividerBefore: Boolean(onOpenSinglePdfPreview),
+                                  onClick: () => setPendingDeleteRecord(rec),
+                                },
+                              ]}
+                            />
                           </div>
                         </td>
                       </tr>
@@ -787,6 +836,59 @@ export function DatabaseAssyView({
           )}
         </div>
       </div>
+
+      {pendingDeleteRecord && (
+        <div
+          className="fixed inset-0 z-50 bg-slate-900/45 backdrop-blur-[2px] flex items-center justify-center p-4"
+          onClick={() => setPendingDeleteRecord(null)}
+        >
+          <div
+            className="w-full max-w-md rounded-2xl bg-white border border-slate-200 shadow-2xl p-6 space-y-4"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div className="flex items-start gap-3">
+              <div className="w-10 h-10 rounded-xl bg-red-50 border border-red-200 flex items-center justify-center shrink-0">
+                <AlertTriangle className="w-5 h-5 text-red-600" />
+              </div>
+              <div className="min-w-0">
+                <h3 className="text-sm font-bold text-slate-900">
+                  Pindahkan Assy ke Recycle Bin?
+                </h3>
+                <p className="text-xs text-slate-600 mt-1 leading-relaxed">
+                  Assy{' '}
+                  <strong className="font-mono-num text-slate-900">
+                    {pendingDeleteRecord.params.assyNo}
+                  </strong>{' '}
+                  ({pendingDeleteRecord.params.customer || '-'}) akan dipindahkan ke Recycle Bin.
+                  Anda masih dapat memulihkannya kapan saja dari menu Recycle Bin.
+                </p>
+              </div>
+            </div>
+
+            <div className="flex items-center justify-end gap-2 pt-2 border-t border-slate-100">
+              <button
+                type="button"
+                onClick={() => setPendingDeleteRecord(null)}
+                className="px-4 py-2 rounded-xl bg-white border border-slate-200 text-xs font-semibold text-slate-700 hover:bg-slate-50 cursor-pointer"
+              >
+                Batal
+              </button>
+              <button
+                type="button"
+                onClick={() => {
+                  const target = pendingDeleteRecord;
+                  setPendingDeleteRecord(null);
+                  onDeleteRecord(target.id);
+                }}
+                className="inline-flex items-center gap-1.5 px-4 py-2 rounded-xl bg-red-600 text-white text-xs font-semibold hover:bg-red-700 cursor-pointer"
+              >
+                <Trash2 className="w-3.5 h-3.5" />
+                <span>Ya, Pindahkan ke Recycle Bin</span>
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
 
       {batchModalOpen && (
         <BatchExportModal
