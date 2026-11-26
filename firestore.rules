@@ -66,25 +66,26 @@ service cloud.firestore {
           'saMatrixMap',
           'mcMatrixMap',
           'cotMatrixMap',
-          'settingWireMatrixMap',
           'difficultyMatrixMap',
-          'processDiscs',
           'autoCutList',
           'feederList',
+          'pendingMasterSync',
+          'updatedByUid',
+          'updatedByName',
           'createdAt',
           'updatedAt'
         ])
         && isValidId(data.ownerId)
-        && data.ownerId == request.auth.uid
+        && (!('pendingMasterSync' in data) || data.pendingMasterSync is bool)
+        && (!('updatedByUid' in data) || isValidId(data.updatedByUid))
+        && (!('updatedByName' in data) || (data.updatedByName is string && data.updatedByName.size() <= 120))
         && data.params is list && data.params.size() <= 300
         && (data.params.size() == 0 || data.params[0] is map)
         && data.acMatrixMap is map
         && data.saMatrixMap is map
         && data.mcMatrixMap is map
         && (!('cotMatrixMap' in data) || data.cotMatrixMap is map)
-        && (!('settingWireMatrixMap' in data) || data.settingWireMatrixMap is map)
         && (!('difficultyMatrixMap' in data) || data.difficultyMatrixMap is map)
-        && (!('processDiscs' in data) || (data.processDiscs is list && data.processDiscs.size() <= 100 && (data.processDiscs.size() == 0 || data.processDiscs[0] is map)))
         && data.autoCutList is list && data.autoCutList.size() <= 2000
         && (data.autoCutList.size() == 0 || data.autoCutList[0] is map)
         && data.feederList is list && data.feederList.size() <= 2000
@@ -113,6 +114,7 @@ service cloud.firestore {
           'id',
           'ownerId',
           'assyNo',
+          'assyNoNormalized',
           'customer',
           'params',
           'assemblyComponents',
@@ -121,14 +123,26 @@ service cloud.firestore {
           'assemblyCotList',
           'terminalRatios',
           'calculation',
+          'createdByUid',
+          'createdByName',
+          'createdByEmail',
+          'updatedByUid',
+          'updatedByName',
+          'updatedByEmail',
           'createdAt',
           'updatedAt'
         ])
         && isValidId(data.id)
         && isValidId(data.ownerId)
-        && data.ownerId == request.auth.uid
         && data.assyNo is string && data.assyNo.size() >= 1 && data.assyNo.size() <= 120
+        && (!('assyNoNormalized' in data) || (data.assyNoNormalized is string && data.assyNoNormalized.size() >= 1 && data.assyNoNormalized.size() <= 120))
         && data.customer is string && data.customer.size() <= 120
+        && (!('createdByUid' in data) || isValidId(data.createdByUid))
+        && (!('createdByName' in data) || (data.createdByName is string && data.createdByName.size() <= 120))
+        && (!('createdByEmail' in data) || (data.createdByEmail is string && data.createdByEmail.size() <= 254))
+        && (!('updatedByUid' in data) || isValidId(data.updatedByUid))
+        && (!('updatedByName' in data) || (data.updatedByName is string && data.updatedByName.size() <= 120))
+        && (!('updatedByEmail' in data) || (data.updatedByEmail is string && data.updatedByEmail.size() <= 254))
         && data.params is map
         && data.assemblyComponents is map
         && data.partList is list && data.partList.size() <= 2000
@@ -168,7 +182,6 @@ service cloud.firestore {
         ])
         && isValidId(data.id)
         && isValidId(data.ownerId)
-        && data.ownerId == request.auth.uid
         && data.responsibleName is string && data.responsibleName.size() >= 1 && data.responsibleName.size() <= 120
         && data.totalSelectedCount is number && data.totalSelectedCount >= 0 && data.totalSelectedCount <= 1000
         && data.affectedAssyCount is number && data.affectedAssyCount >= 0 && data.affectedAssyCount <= 1000
@@ -206,8 +219,7 @@ service cloud.firestore {
         ])
         && isValidId(data.id)
         && isValidId(data.ownerId)
-        && data.ownerId == request.auth.uid
-        && data.itemType in ['assy_record', 'refresh_history', 'auto_cut_item', 'feeder_item', 'process_disc']
+        && data.itemType in ['assy_record', 'refresh_history', 'auto_cut_item', 'feeder_item']
         && data.originalCollection in ['assyRecords', 'refreshHistory', 'masterConfigs']
         && isValidId(data.originalId)
         && data.title is string && data.title.size() >= 1 && data.title.size() <= 160
@@ -217,7 +229,7 @@ service cloud.firestore {
         && data.createdAt is timestamp;
     }
 
-    // Collection 1: users/{userId}
+    // Collection 1: users/{userId} (strictly owner-only PII)
     match /users/{userId} {
       allow get: if isSignedIn() && isValidId(userId) && request.auth.uid == userId;
       allow list: if false;
@@ -246,22 +258,26 @@ service cloud.firestore {
       allow delete: if false;
     }
 
-    // Collection 2: masterConfigs/{userId}
-    match /masterConfigs/{userId} {
-      allow get: if isSignedIn() && isValidId(userId) && request.auth.uid == userId;
+    // Collection 2: masterConfigs/{configId} (shared workspace config 'shared' + legacy per-user fallback)
+    match /masterConfigs/{configId} {
+      allow get: if isSignedIn()
+        && isValidId(configId)
+        && (configId == 'shared' || configId == request.auth.uid);
       allow list: if false;
       allow create: if isSignedIn()
-        && isValidId(userId)
-        && request.auth.uid == userId
+        && isValidId(configId)
+        && (configId == 'shared' || configId == request.auth.uid)
         && isValidMasterConfig(incoming())
-        && incoming().ownerId == userId
+        && incoming().ownerId == request.auth.uid
+        && (!('updatedByUid' in incoming()) || incoming().updatedByUid == request.auth.uid)
         && incoming().createdAt == request.time
         && incoming().updatedAt == request.time;
       allow update: if isSignedIn()
-        && isValidId(userId)
-        && request.auth.uid == userId
+        && isValidId(configId)
+        && (configId == 'shared' || configId == request.auth.uid)
         && isValidMasterConfig(incoming())
         && incoming().ownerId == existing().ownerId
+        && (!('updatedByUid' in incoming()) || incoming().updatedByUid == request.auth.uid)
         && incoming().createdAt == existing().createdAt
         && incoming().updatedAt == request.time
         && incoming().diff(existing()).affectedKeys().hasOnly([
@@ -270,36 +286,45 @@ service cloud.firestore {
           'saMatrixMap',
           'mcMatrixMap',
           'cotMatrixMap',
-          'settingWireMatrixMap',
           'difficultyMatrixMap',
+          // Legacy fields allowed in diff ONLY so deleteField() can strip them (rejected in incoming() by isValidMasterConfig)
+          'settingWireMatrixMap',
           'processDiscs',
           'autoCutList',
           'feederList',
+          'pendingMasterSync',
+          'updatedByUid',
+          'updatedByName',
           'updatedAt'
         ]);
       allow delete: if false;
     }
 
-    // Collection 3: assyRecords/{recordId}
+    // Collection 3: assyRecords/{recordId} (shared across all verified Google accounts)
     match /assyRecords/{recordId} {
-      allow get: if isSignedIn() && isValidId(recordId) && existing().ownerId == request.auth.uid;
-      allow list: if isSignedIn() && resource.data.ownerId == request.auth.uid;
+      allow get: if isSignedIn() && isValidId(recordId);
+      allow list: if isSignedIn();
       allow create: if isSignedIn()
         && isValidId(recordId)
         && isValidAssyRecord(incoming())
         && incoming().id == recordId
+        && incoming().ownerId == request.auth.uid
+        && (!('createdByUid' in incoming()) || incoming().createdByUid == request.auth.uid)
+        && (!('updatedByUid' in incoming()) || incoming().updatedByUid == request.auth.uid)
         && incoming().createdAt == request.time
         && incoming().updatedAt == request.time;
       allow update: if isSignedIn()
         && isValidId(recordId)
-        && existing().ownerId == request.auth.uid
         && isValidAssyRecord(incoming())
         && incoming().id == existing().id
         && incoming().ownerId == existing().ownerId
         && incoming().createdAt == existing().createdAt
+        && (!('createdByUid' in existing()) || incoming().createdByUid == existing().createdByUid)
+        && (!('updatedByUid' in incoming()) || incoming().updatedByUid == request.auth.uid)
         && incoming().updatedAt == request.time
         && incoming().diff(existing()).affectedKeys().hasOnly([
           'assyNo',
+          'assyNoNormalized',
           'customer',
           'params',
           'assemblyComponents',
@@ -308,37 +333,45 @@ service cloud.firestore {
           'assemblyCotList',
           'terminalRatios',
           'calculation',
+          'createdByUid',
+          'createdByName',
+          'createdByEmail',
+          'updatedByUid',
+          'updatedByName',
+          'updatedByEmail',
           'updatedAt'
         ]);
-      allow delete: if isSignedIn() && isValidId(recordId) && existing().ownerId == request.auth.uid;
+      allow delete: if isSignedIn() && isValidId(recordId);
     }
 
-    // Collection 4: refreshHistory/{historyId}
+    // Collection 4: refreshHistory/{historyId} (shared append-only audit log across all verified Google accounts)
     match /refreshHistory/{historyId} {
-      allow get: if isSignedIn() && isValidId(historyId) && existing().ownerId == request.auth.uid;
-      allow list: if isSignedIn() && resource.data.ownerId == request.auth.uid;
+      allow get: if isSignedIn() && isValidId(historyId);
+      allow list: if isSignedIn();
       allow create: if isSignedIn()
         && isValidId(historyId)
         && isValidRefreshHistory(incoming())
         && incoming().id == historyId
+        && incoming().ownerId == request.auth.uid
         && incoming().refreshedAt == request.time
         && incoming().createdAt == request.time;
       allow update: if false;
-      allow delete: if isSignedIn() && isValidId(historyId) && existing().ownerId == request.auth.uid;
+      allow delete: if isSignedIn() && isValidId(historyId);
     }
 
-    // Collection 5: recycleBin/{itemId}
+    // Collection 5: recycleBin/{itemId} (shared recycle bin across all verified Google accounts)
     match /recycleBin/{itemId} {
-      allow get: if isSignedIn() && isValidId(itemId) && existing().ownerId == request.auth.uid;
-      allow list: if isSignedIn() && resource.data.ownerId == request.auth.uid;
+      allow get: if isSignedIn() && isValidId(itemId);
+      allow list: if isSignedIn();
       allow create: if isSignedIn()
         && isValidId(itemId)
         && isValidRecycleBinItem(incoming())
         && incoming().id == itemId
+        && incoming().ownerId == request.auth.uid
         && incoming().deletedAt == request.time
         && incoming().createdAt == request.time;
       allow update: if false;
-      allow delete: if isSignedIn() && isValidId(itemId) && existing().ownerId == request.auth.uid;
+      allow delete: if isSignedIn() && isValidId(itemId);
     }
   }
 }

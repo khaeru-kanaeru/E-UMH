@@ -1,24 +1,30 @@
 import { User } from 'firebase/auth';
 import {
+  DocumentData,
+  QueryDocumentSnapshot,
   Timestamp,
   collection,
   deleteDoc,
+  deleteField,
   doc,
+  getCountFromServer,
   getDoc,
   getDocs,
+  limit,
   onSnapshot,
+  orderBy,
   query,
   serverTimestamp,
   setDoc,
+  startAfter,
   updateDoc,
   where,
   writeBatch,
 } from 'firebase/firestore';
-import { upgradeLegacyCotMatrix, upgradeSettingWireMatrix, upgradeDifficultyMatrix } from '../data/cotMasterV2';
-import { upgradeBuiltinProcessDiscs } from '../data/defaultProcessDiscs';
+import { upgradeLegacyCotMatrix, upgradeDifficultyMatrix } from '../data/cotMasterV2';
 import { upgradeAssemblyStdParams } from '../data/defaultStdDb';
-import { getAllowSecForMode } from '../engine/umhCalculator';
-import { OperationType, db, handleFirestoreError } from '../firebase';
+import { calculateUmh, getAllowSecForMode } from '../engine/umhCalculator';
+import { OperationType, db, handleFirestoreError, legacyDefaultDb } from '../firebase';
 import {
   AssyRecord,
   AutoCutItem,
@@ -27,7 +33,6 @@ import {
   MasterChangeDiffItem,
   MasterChangeHistoryEntry,
   MasterChangeSource,
-  ProcessLogicDisc,
   RecycleBinItem,
   RecycleBinItemType,
   RecycleBinOriginalCollection,
@@ -37,6 +42,46 @@ import {
 import firestoreRulesSource from '../../firestore.rules?raw';
 
 export const FIRESTORE_RULES_SOURCE = firestoreRulesSource;
+export const SHARED_MASTER_DOC_ID = 'shared';
+export const ASSY_PAGE_SIZE = 33;
+
+export interface CloudActor {
+  uid: string;
+  name: string;
+  email?: string;
+}
+
+export interface DuplicateAssyMatch {
+  id: string;
+  assyNo: string;
+  customer: string;
+  createdByName?: string;
+  updatedAt: string;
+}
+
+export interface AssyPageResult {
+  records: AssyRecord[];
+  firstDoc: QueryDocumentSnapshot<DocumentData> | null;
+  lastDoc: QueryDocumentSnapshot<DocumentData> | null;
+  hasMore: boolean;
+}
+
+export function getGoogleUserDisplayName(user: User | null | undefined): string {
+  if (!user) return '';
+  return (user.displayName || user.email || 'User').trim().slice(0, 120);
+}
+
+export function toCloudActor(user: User): CloudActor {
+  return {
+    uid: user.uid,
+    name: getGoogleUserDisplayName(user) || 'User',
+    email: (user.email || '').trim().slice(0, 254) || undefined,
+  };
+}
+
+export function normalizeAssyNo(assyNo: string): string {
+  return assyNo.trim().toLowerCase().replace(/\s+/g, ' ').slice(0, 120);
+}
 
 function isPermissionDeniedError(err: unknown): boolean {
   const msg = err instanceof Error ? err.message : String(err);
@@ -66,6 +111,8 @@ export interface CloudMasterConfig {
   stdDb: StdDatabase;
   autoCutList: AutoCutItem[];
   feederList: FeederItem[];
+  pendingMasterSync?: boolean;
+  updatedByName?: string;
 }
 
 const MAX_DOC_BYTES = 860_000; // Safe ceiling below Firestore's 1 MiB document limit
@@ -75,11 +122,10 @@ function sanitizeIdPart(raw: string): string {
   return cleaned || `item_${Date.now()}`;
 }
 
-export function toScopedDocId(uid: string, localId: string): string {
-  const prefix = `${sanitizeIdPart(uid).slice(0, 12)}_`;
-  const cleanLocal = sanitizeIdPart(localId);
-  const combined = cleanLocal.startsWith(prefix) ? cleanLocal : `${prefix}${cleanLocal}`;
-  return combined.slice(0, 128);
+export function toSharedDocId(rawId: string, prefix = 'doc'): string {
+  const clean = sanitizeIdPart(rawId).slice(0, 128);
+  if (clean && clean !== 'item_') return clean;
+  return `${prefix}_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`.slice(0, 128);
 }
 
 export function createLocalRecycleId(prefix = 'bin'): string {
@@ -151,6 +197,53 @@ function tsToIso(val: unknown): string {
   return new Date().toISOString();
 }
 
+function hydrateAssyRecordFromDoc(
+  docId: string,
+  d: Record<string, unknown>,
+  recalcContext?: {
+    stdDb: StdDatabase;
+    autoCutList: AutoCutItem[];
+    feederList: FeederItem[];
+  }
+): AssyRecord {
+  const baseRec: AssyRecord = {
+    id: String(d.id || docId),
+    createdAt: tsToIso(d.createdAt),
+    updatedAt: tsToIso(d.updatedAt),
+    createdByUid: typeof d.createdByUid === 'string' ? d.createdByUid : undefined,
+    createdByName: typeof d.createdByName === 'string' ? d.createdByName : undefined,
+    createdByEmail: typeof d.createdByEmail === 'string' ? d.createdByEmail : undefined,
+    updatedByUid: typeof d.updatedByUid === 'string' ? d.updatedByUid : undefined,
+    updatedByName: typeof d.updatedByName === 'string' ? d.updatedByName : undefined,
+    updatedByEmail: typeof d.updatedByEmail === 'string' ? d.updatedByEmail : undefined,
+    params: d.params as AssyRecord['params'],
+    assemblyComponents: d.assemblyComponents as AssyRecord['assemblyComponents'],
+    partList: Array.isArray(d.partList) ? (d.partList as AssyRecord['partList']) : [],
+    ppcsList: Array.isArray(d.ppcsList) ? (d.ppcsList as AssyRecord['ppcsList']) : [],
+    assemblyCotList: Array.isArray(d.assemblyCotList)
+      ? (d.assemblyCotList as AssyRecord['assemblyCotList'])
+      : [],
+    terminalRatios: (d.terminalRatios as AssyRecord['terminalRatios']) || {},
+    calculation: d.calculation as AssyRecord['calculation'],
+  };
+
+  if (
+    recalcContext &&
+    (!baseRec.calculation ||
+      !Array.isArray(baseRec.calculation.processes) ||
+      baseRec.calculation.processes.length === 0)
+  ) {
+    baseRec.calculation = calculateUmh(
+      baseRec,
+      recalcContext.stdDb,
+      recalcContext.autoCutList,
+      recalcContext.feederList
+    );
+  }
+
+  return baseRec;
+}
+
 function compactAssyRecordPayload(record: AssyRecord): Record<string, unknown> {
   const calculationPayload: Record<string, unknown> = cleanForFirestore(
     record.calculation
@@ -160,6 +253,12 @@ function compactAssyRecordPayload(record: AssyRecord): Record<string, unknown> {
     id: record.id,
     createdAt: record.createdAt,
     updatedAt: record.updatedAt,
+    ...(record.createdByUid ? { createdByUid: record.createdByUid } : {}),
+    ...(record.createdByName ? { createdByName: record.createdByName } : {}),
+    ...(record.createdByEmail ? { createdByEmail: record.createdByEmail } : {}),
+    ...(record.updatedByUid ? { updatedByUid: record.updatedByUid } : {}),
+    ...(record.updatedByName ? { updatedByName: record.updatedByName } : {}),
+    ...(record.updatedByEmail ? { updatedByEmail: record.updatedByEmail } : {}),
     params: cleanForFirestore({
       ...record.params,
       assyNo: (record.params.assyNo || '').trim().slice(0, 120) || 'ASSY',
@@ -180,6 +279,7 @@ function compactAssyRecordPayload(record: AssyRecord): Record<string, unknown> {
   if (estimateUtf8Bytes(payload) > MAX_DOC_BYTES - 40_000) {
     payload.calculation = {
       lotMetrics: record.calculation.lotMetrics,
+      rawTotalBaseSec: record.calculation.rawTotalBaseSec,
       totalBaseSec: record.calculation.totalBaseSec,
       totalAllowByProcessSec: record.calculation.totalAllowByProcessSec,
       totalAllowByFinalSec: record.calculation.totalAllowByFinalSec,
@@ -192,19 +292,55 @@ function compactAssyRecordPayload(record: AssyRecord): Record<string, unknown> {
   return payload;
 }
 
-function buildAssyPayloadFields(uid: string, record: AssyRecord, scopedId: string) {
+function buildAssyPayloadFields(
+  actor: CloudActor,
+  record: AssyRecord,
+  docId: string,
+  existingDocData?: Record<string, unknown>
+) {
   const assyNo = (record.params.assyNo || '').trim().slice(0, 120) || 'ASSY';
+  const assyNoNormalized = normalizeAssyNo(assyNo) || 'assy';
   const customer = (record.params.customer || '').trim().slice(0, 120);
 
   const calculationPayload: Record<string, unknown> = cleanForFirestore(
     record.calculation
   ) as unknown as Record<string, unknown>;
 
-  const payload = {
-    id: scopedId,
-    ownerId: uid,
+  const existingCreatedByUid =
+    typeof existingDocData?.createdByUid === 'string' && existingDocData.createdByUid
+      ? existingDocData.createdByUid
+      : undefined;
+  const existingCreatedByName =
+    typeof existingDocData?.createdByName === 'string' && existingDocData.createdByName
+      ? existingDocData.createdByName
+      : record.createdByName;
+  const existingCreatedByEmail =
+    typeof existingDocData?.createdByEmail === 'string' && existingDocData.createdByEmail
+      ? existingDocData.createdByEmail
+      : record.createdByEmail;
+
+  // On create (no existingDocData), createdByUid MUST match actor.uid to satisfy Firestore create rules,
+  // while createdByName/Email can still preserve original attribution (e.g. recycle-bin restore).
+  const createdByUid = sanitizeIdPart(existingCreatedByUid || actor.uid).slice(0, 128);
+  const createdByName = (existingCreatedByName || actor.name || 'User').trim().slice(0, 120);
+  const createdByEmail = (existingCreatedByEmail || actor.email || '').trim().slice(0, 254);
+
+  const updatedByUid = sanitizeIdPart(actor.uid).slice(0, 128);
+  const updatedByName = (actor.name || 'User').trim().slice(0, 120);
+  const updatedByEmail = (actor.email || '').trim().slice(0, 254);
+
+  const payload: Record<string, unknown> = {
+    id: docId,
+    ownerId: actor.uid,
     assyNo,
+    assyNoNormalized,
     customer,
+    createdByUid,
+    createdByName,
+    ...(createdByEmail ? { createdByEmail } : {}),
+    updatedByUid,
+    updatedByName,
+    ...(updatedByEmail ? { updatedByEmail } : {}),
     params: cleanForFirestore({
       ...record.params,
       assyNo,
@@ -225,6 +361,7 @@ function buildAssyPayloadFields(uid: string, record: AssyRecord, scopedId: strin
   if (estimateUtf8Bytes(payload) > MAX_DOC_BYTES) {
     payload.calculation = {
       lotMetrics: record.calculation.lotMetrics,
+      rawTotalBaseSec: record.calculation.rawTotalBaseSec,
       totalBaseSec: record.calculation.totalBaseSec,
       totalAllowByProcessSec: record.calculation.totalAllowByProcessSec,
       totalAllowByFinalSec: record.calculation.totalAllowByFinalSec,
@@ -238,13 +375,12 @@ function buildAssyPayloadFields(uid: string, record: AssyRecord, scopedId: strin
   return payload;
 }
 
-function buildRecycleBinFirestoreDoc(uid: string, item: RecycleBinItem, scopedBinId: string) {
+function buildRecycleBinFirestoreDoc(uid: string, item: RecycleBinItem, docBinId: string) {
   const allowedTypes: RecycleBinItemType[] = [
     'assy_record',
     'refresh_history',
     'auto_cut_item',
     'feeder_item',
-    'process_disc',
   ];
   const allowedCols: RecycleBinOriginalCollection[] = [
     'assyRecords',
@@ -266,7 +402,7 @@ function buildRecycleBinFirestoreDoc(uid: string, item: RecycleBinItem, scopedBi
   const cleanedPayload = cleanForFirestore(item.payload || {}) as Record<string, unknown>;
 
   return {
-    id: scopedBinId,
+    id: docBinId,
     ownerId: uid,
     itemType,
     originalCollection,
@@ -352,25 +488,6 @@ export function buildRecycleBinItemFromFeeder(item: FeederItem): RecycleBinItem 
   };
 }
 
-export function buildRecycleBinItemFromDisc(disc: ProcessLogicDisc): RecycleBinItem {
-  return {
-    id: createLocalRecycleId('bin_disc'),
-    itemType: 'process_disc',
-    originalCollection: 'masterConfigs',
-    originalId: sanitizeIdPart(`disc_${disc.processId}`).slice(0, 128),
-    title: `#${String(disc.processId).padStart(2, '0')} ${disc.processName || 'Custom Process'}`.slice(
-      0,
-      160
-    ),
-    subtitle: `Logic Disc Sub-Proses · v${disc.version || '1.0.0'} · Bobot ${disc.weight}`.slice(
-      0,
-      240
-    ),
-    deletedAt: new Date().toISOString(),
-    payload: cleanForFirestore(disc) as unknown as Record<string, unknown>,
-  };
-}
-
 export async function initializeCloudWorkspace(
   user: User,
   localState: {
@@ -384,19 +501,20 @@ export async function initializeCloudWorkspace(
     pendingMasterSync: boolean;
   }
 ): Promise<{ recycleBinCloudAvailable: boolean }> {
-  const uid = user.uid;
+  const actor = toCloudActor(user);
+  const uid = actor.uid;
   const userPath = `users/${uid}`;
-  const masterPath = `masterConfigs/${uid}`;
+  const sharedMasterPath = `masterConfigs/${SHARED_MASTER_DOC_ID}`;
   let recycleBinCloudAvailable = true;
 
-  // 1. Ensure user profile exists
+  // 1. Ensure user profile exists (strictly owner-only PII)
   try {
     const userRef = doc(db, 'users', uid);
     const userSnap = await getDoc(userRef);
     const displayName = (user.displayName || '').slice(0, 120);
     const email = (user.email || 'user@example.com').slice(0, 254);
     const photoURL = (user.photoURL || '').slice(0, 1000);
-    const lastPicName = (localState.lastPicName || '').slice(0, 120);
+    const lastPicName = (actor.name || localState.lastPicName || '').slice(0, 120);
 
     if (!userSnap.exists()) {
       await setDoc(userRef, {
@@ -414,6 +532,7 @@ export async function initializeCloudWorkspace(
         email,
         ...(displayName ? { displayName } : {}),
         ...(photoURL ? { photoURL } : {}),
+        ...(lastPicName ? { lastPicName } : {}),
         updatedAt: serverTimestamp(),
       });
     }
@@ -421,114 +540,92 @@ export async function initializeCloudWorkspace(
     handleFirestoreError(error, OperationType.WRITE, userPath);
   }
 
-  // 2. Ensure master config exists (with fallback if (default) DB rules do not yet include processDiscs)
+  // 2. Ensure shared master config (`masterConfigs/shared`) exists
+  //    If `shared` does not exist yet, migrate from legacy `masterConfigs/{uid}` if present, else seed from local state.
   try {
-    const masterRef = doc(db, 'masterConfigs', uid);
-    const masterSnap = await getDoc(masterRef);
+    const sharedMasterRef = doc(db, 'masterConfigs', SHARED_MASTER_DOC_ID);
+    const sharedMasterSnap = await getDoc(sharedMasterRef);
 
-    if (!masterSnap.exists()) {
-      const baseMaster = {
+    if (!sharedMasterSnap.exists()) {
+      let legacyData: Record<string, unknown> | null = null;
+      try {
+        const legacySnap = await getDoc(doc(db, 'masterConfigs', uid));
+        if (legacySnap.exists()) {
+          legacyData = legacySnap.data() as Record<string, unknown>;
+        }
+      } catch {
+        // Ignore if legacy doc doesn't exist in current DB
+      }
+      if (!legacyData && legacyDefaultDb) {
+        try {
+          const defaultLegacySnap = await getDoc(doc(legacyDefaultDb, 'masterConfigs', uid));
+          if (defaultLegacySnap.exists()) {
+            legacyData = defaultLegacySnap.data() as Record<string, unknown>;
+          }
+        } catch {
+          // Ignore if legacy (default) DB is inaccessible or empty
+        }
+      }
+
+      const seedStdParams =
+        legacyData && Array.isArray(legacyData.params)
+          ? upgradeAssemblyStdParams(legacyData.params)
+          : localState.stdDb.params;
+      const seedAc = legacyData
+        ? mapToMatrix(legacyData.acMatrixMap as Record<string, number[]> | undefined, localState.stdDb.acMatrix)
+        : localState.stdDb.acMatrix;
+      const seedSa = legacyData
+        ? mapToMatrix(legacyData.saMatrixMap as Record<string, number[]> | undefined, localState.stdDb.saMatrix)
+        : localState.stdDb.saMatrix;
+      const seedMc = legacyData
+        ? mapToMatrix(legacyData.mcMatrixMap as Record<string, number[]> | undefined, localState.stdDb.mcMatrix)
+        : localState.stdDb.mcMatrix;
+      const seedCot = legacyData
+        ? upgradeLegacyCotMatrix(
+            mapToMatrix(legacyData.cotMatrixMap as Record<string, number[]> | undefined, localState.stdDb.cotMatrix)
+          )
+        : localState.stdDb.cotMatrix;
+      const seedDiff = legacyData
+        ? upgradeDifficultyMatrix(
+            mapToMatrix(
+              legacyData.difficultyMatrixMap as Record<string, number[]> | undefined,
+              localState.stdDb.difficultyMatrix
+            )
+          )
+        : localState.stdDb.difficultyMatrix;
+      const seedAutoCut =
+        legacyData && Array.isArray(legacyData.autoCutList)
+          ? (legacyData.autoCutList as AutoCutItem[])
+          : localState.autoCutList;
+      const seedFeeder =
+        legacyData && Array.isArray(legacyData.feederList)
+          ? (legacyData.feederList as FeederItem[])
+          : localState.feederList;
+
+      await setDoc(sharedMasterRef, {
         ownerId: uid,
-        params: cleanForFirestore(localState.stdDb.params.slice(0, 300)),
-        acMatrixMap: matrixToMap(localState.stdDb.acMatrix),
-        saMatrixMap: matrixToMap(localState.stdDb.saMatrix),
-        mcMatrixMap: matrixToMap(localState.stdDb.mcMatrix),
-        autoCutList: cleanForFirestore(localState.autoCutList.slice(0, 2000)),
-        feederList: cleanForFirestore(localState.feederList.slice(0, 2000)),
+        updatedByUid: uid,
+        updatedByName: actor.name,
+        pendingMasterSync: Boolean(localState.pendingMasterSync),
+        params: cleanForFirestore(seedStdParams.slice(0, 300)),
+        acMatrixMap: matrixToMap(seedAc),
+        saMatrixMap: matrixToMap(seedSa),
+        mcMatrixMap: matrixToMap(seedMc),
+        cotMatrixMap: matrixToMap(seedCot),
+        difficultyMatrixMap: matrixToMap(seedDiff),
+        autoCutList: cleanForFirestore(seedAutoCut.slice(0, 2000)),
+        feederList: cleanForFirestore(seedFeeder.slice(0, 2000)),
         createdAt: serverTimestamp(),
         updatedAt: serverTimestamp(),
-      };
-      const bodyWithDiscs = {
-        ...baseMaster,
-        processDiscs: cleanForFirestore((localState.stdDb.processDiscs ?? []).slice(0, 100)),
-      };
-      const bodyWithCot = {
-        ...bodyWithDiscs,
-        cotMatrixMap: matrixToMap(localState.stdDb.cotMatrix),
-      };
-      const fullMaster = {
-        ...bodyWithCot,
-        settingWireMatrixMap: matrixToMap(localState.stdDb.settingWireMatrix),
-      };
-      const bodyDifficulty = {
-        ...fullMaster,
-        difficultyMatrixMap: matrixToMap(localState.stdDb.difficultyMatrix),
-      };
-      try {
-        await setDoc(masterRef, bodyDifficulty);
-      } catch (innerErr) {
-        if (isPermissionDeniedError(innerErr)) {
-          try {
-            await setDoc(masterRef, fullMaster);
-          } catch (innerErr0) {
-            if (isPermissionDeniedError(innerErr0)) {
-              try {
-                await setDoc(masterRef, bodyWithCot);
-              } catch (innerErr2) {
-                if (isPermissionDeniedError(innerErr2)) {
-                  try {
-                    await setDoc(masterRef, bodyWithDiscs);
-                  } catch (innerErr3) {
-                    if (isPermissionDeniedError(innerErr3)) {
-                      await setDoc(masterRef, baseMaster);
-                    } else {
-                      throw innerErr3;
-                    }
-                  }
-                } else {
-                  throw innerErr2;
-                }
-              }
-            } else {
-              throw innerErr0;
-            }
-          }
-        } else {
-          throw innerErr;
-        }
-      }
+      });
     }
   } catch (error) {
-    handleFirestoreError(error, OperationType.WRITE, masterPath);
+    handleFirestoreError(error, OperationType.WRITE, sharedMasterPath);
   }
 
-  // 3. Quietly check if /recycleBin rules are published on the active Firestore database
-  const existingBinIds = new Set<string>();
-  const binnedOriginalIds = new Set<string>();
+  // 3. Probe shared `/recycleBin` availability (lightweight limit 1 query)
   try {
-    const binSnap = await getDocs(
-      query(collection(db, 'recycleBin'), where('ownerId', '==', uid))
-    );
-    binSnap.forEach((d) => {
-      existingBinIds.add(d.id);
-      const data = d.data();
-      if (typeof data.originalId === 'string') {
-        binnedOriginalIds.add(data.originalId);
-        binnedOriginalIds.add(toScopedDocId(uid, data.originalId));
-      }
-    });
-
-    // Sync any local recycleBin items not yet in Firestore
-    if (localState.recycleBin.length > 0) {
-      for (const binItem of localState.recycleBin.slice(0, 100)) {
-        // Skip in-place trashed assy markers that already live in assyRecords
-        if (binItem.id.startsWith('inplace_')) continue;
-        const scopedBinId = toScopedDocId(uid, binItem.id);
-        if (existingBinIds.has(scopedBinId)) continue;
-        const binPath = `recycleBin/${scopedBinId}`;
-        try {
-          await setDoc(
-            doc(db, 'recycleBin', scopedBinId),
-            buildRecycleBinFirestoreDoc(uid, binItem, scopedBinId)
-          );
-          existingBinIds.add(scopedBinId);
-          binnedOriginalIds.add(binItem.originalId);
-          binnedOriginalIds.add(toScopedDocId(uid, binItem.originalId));
-        } catch (error) {
-          handleFirestoreError(error, OperationType.CREATE, binPath);
-        }
-      }
-    }
+    await getDocs(query(collection(db, 'recycleBin'), limit(1)));
   } catch (probeErr) {
     if (isPermissionDeniedError(probeErr)) {
       recycleBinCloudAvailable = false;
@@ -537,75 +634,98 @@ export async function initializeCloudWorkspace(
     }
   }
 
-  // Also include local recycleBin originalIds so locally-deleted items are not re-seeded
-  localState.recycleBin.forEach((b) => {
-    binnedOriginalIds.add(b.originalId);
-    binnedOriginalIds.add(toScopedDocId(uid, b.originalId));
-  });
-
-  // 4. Sync any local Assy records not yet present in Firestore (and not in Recycle Bin)
-  if (localState.records.length > 0) {
-    const existingAssyIds = new Set<string>();
+  // 4. Remove any previously auto-seeded KHR sample doc, and seed Assy records only if collection is empty.
+  //    Checks legacy `(default)` DB first (if user had real data saved there earlier), then falls back to localState.
+  try {
     try {
-      const existingSnap = await getDocs(
-        query(collection(db, 'assyRecords'), where('ownerId', '==', uid))
-      );
-      existingSnap.forEach((d) => existingAssyIds.add(d.id));
-    } catch (error) {
-      handleFirestoreError(error, OperationType.LIST, 'assyRecords');
+      const sampleRef = doc(db, 'assyRecords', 'sample_khr55431');
+      const sampleSnap = await getDoc(sampleRef);
+      if (sampleSnap.exists()) {
+        await deleteDoc(sampleRef);
+      }
+    } catch {
+      // Ignore if sample doc doesn't exist
     }
 
-    for (const rec of localState.records) {
-      const scopedId = toScopedDocId(uid, rec.id);
-      if (existingAssyIds.has(scopedId) || binnedOriginalIds.has(scopedId) || binnedOriginalIds.has(rec.id)) {
-        continue;
+    const anyAssySnap = await getDocs(query(collection(db, 'assyRecords'), limit(1)));
+    if (anyAssySnap.empty) {
+      const seedRecords: AssyRecord[] = [];
+      const seenDocIds = new Set<string>();
+
+      if (legacyDefaultDb) {
+        try {
+          const legacyAssySnap = await getDocs(
+            query(collection(legacyDefaultDb, 'assyRecords'), where('ownerId', '==', uid))
+          );
+          legacyAssySnap.forEach((docSnap) => {
+            if (docSnap.id === 'sample_khr55431') return;
+            const hydrated = hydrateAssyRecordFromDoc(
+              docSnap.id,
+              docSnap.data() as Record<string, unknown>
+            );
+            if (!hydrated.params?._recycleBinMeta && hydrated.id !== 'sample_khr55431') {
+              const docId = toSharedDocId(hydrated.id, 'assy');
+              if (!seenDocIds.has(docId)) {
+                seenDocIds.add(docId);
+                seedRecords.push({ ...hydrated, id: docId });
+              }
+            }
+          });
+        } catch {
+          // Ignore if legacy (default) DB is inaccessible or empty
+        }
       }
-      const recPath = `assyRecords/${scopedId}`;
-      try {
-        await setDoc(doc(db, 'assyRecords', scopedId), {
-          ...buildAssyPayloadFields(uid, rec, scopedId),
+
+      localState.records.forEach((rec) => {
+        if (rec.id === 'sample_khr55431') return;
+        const docId = toSharedDocId(rec.id, 'assy');
+        if (!seenDocIds.has(docId)) {
+          seenDocIds.add(docId);
+          seedRecords.push(rec);
+        }
+      });
+
+      for (const rec of seedRecords) {
+        const docId = toSharedDocId(rec.id, 'assy');
+        await setDoc(doc(db, 'assyRecords', docId), {
+          ...buildAssyPayloadFields(actor, rec, docId),
           createdAt: serverTimestamp(),
           updatedAt: serverTimestamp(),
         });
-      } catch (error) {
-        handleFirestoreError(error, OperationType.CREATE, recPath);
       }
     }
+  } catch (error) {
+    handleFirestoreError(error, OperationType.LIST, 'assyRecords');
   }
 
-  // 5. Sync any local refresh history entries not yet present in Firestore (and not in Recycle Bin)
-  if (localState.refreshHistory.length > 0) {
-    const existingHistIds = new Set<string>();
+  // 5. Silently migrate prior `refreshHistory` from legacy `(default)` DB if shared history is empty
+  if (legacyDefaultDb) {
     try {
-      const existingSnap = await getDocs(
-        query(collection(db, 'refreshHistory'), where('ownerId', '==', uid))
-      );
-      existingSnap.forEach((d) => existingHistIds.add(d.id));
-    } catch (error) {
-      handleFirestoreError(error, OperationType.LIST, 'refreshHistory');
-    }
-
-    for (const entry of localState.refreshHistory.slice(0, 50)) {
-      const scopedId = toScopedDocId(uid, entry.id);
-      if (existingHistIds.has(scopedId) || binnedOriginalIds.has(scopedId) || binnedOriginalIds.has(entry.id)) {
-        continue;
+      const anyHistSnap = await getDocs(query(collection(db, 'refreshHistory'), limit(1)));
+      if (anyHistSnap.empty) {
+        const legacyHistSnap = await getDocs(
+          query(collection(legacyDefaultDb, 'refreshHistory'), where('ownerId', '==', uid))
+        );
+        for (const docSnap of legacyHistSnap.docs) {
+          const d = docSnap.data() as Record<string, unknown>;
+          const docId = toSharedDocId(String(d.id || docSnap.id), 'hist');
+          await setDoc(doc(db, 'refreshHistory', docId), {
+            id: docId,
+            ownerId: uid,
+            refreshedAt: serverTimestamp(),
+            responsibleName: String(d.responsibleName || actor.name || 'PIC').slice(0, 120),
+            totalSelectedCount: Math.max(0, Math.min(1000, Number(d.totalSelectedCount) || 0)),
+            affectedAssyCount: Math.max(0, Math.min(1000, Number(d.affectedAssyCount) || 0)),
+            unaffectedAssyCount: Math.max(0, Math.min(1000, Number(d.unaffectedAssyCount) || 0)),
+            affectedDiffs: Array.isArray(d.affectedDiffs)
+              ? cleanForFirestore(d.affectedDiffs.slice(0, 500))
+              : [],
+            createdAt: serverTimestamp(),
+          });
+        }
       }
-      const histPath = `refreshHistory/${scopedId}`;
-      try {
-        await setDoc(doc(db, 'refreshHistory', scopedId), {
-          id: scopedId,
-          ownerId: uid,
-          refreshedAt: serverTimestamp(),
-          responsibleName: (entry.responsibleName || 'PIC').slice(0, 120),
-          totalSelectedCount: Math.max(0, Math.min(1000, entry.totalSelectedCount)),
-          affectedAssyCount: Math.max(0, Math.min(1000, entry.affectedAssyCount)),
-          unaffectedAssyCount: Math.max(0, Math.min(1000, entry.unaffectedAssyCount)),
-          affectedDiffs: cleanForFirestore(entry.affectedDiffs.slice(0, 500)),
-          createdAt: serverTimestamp(),
-        });
-      } catch (error) {
-        handleFirestoreError(error, OperationType.CREATE, histPath);
-      }
+    } catch {
+      // Ignore if legacy (default) history cannot be read
     }
   }
 
@@ -667,14 +787,13 @@ export async function updateUserPreferencesInCloud(
 }
 
 export function subscribeMasterConfig(
-  uid: string,
   fallbackStd: StdDatabase,
   onData: (cfg: CloudMasterConfig | null) => void,
   onError: (err: Error) => void
 ) {
-  const path = `masterConfigs/${uid}`;
+  const path = `masterConfigs/${SHARED_MASTER_DOC_ID}`;
   return onSnapshot(
-    doc(db, 'masterConfigs', uid),
+    doc(db, 'masterConfigs', SHARED_MASTER_DOC_ID),
     (snap) => {
       if (!snap.exists()) {
         onData(null);
@@ -690,21 +809,15 @@ export function subscribeMasterConfig(
           saMatrix: mapToMatrix(d.saMatrixMap, fallbackStd.saMatrix),
           mcMatrix: mapToMatrix(d.mcMatrixMap, fallbackStd.mcMatrix),
           cotMatrix: upgradeLegacyCotMatrix(mapToMatrix(d.cotMatrixMap, fallbackStd.cotMatrix)),
-          settingWireMatrix: upgradeSettingWireMatrix(
-            mapToMatrix(d.settingWireMatrixMap, fallbackStd.settingWireMatrix)
-          ),
           difficultyMatrix: upgradeDifficultyMatrix(
             mapToMatrix(d.difficultyMatrixMap, fallbackStd.difficultyMatrix)
           ),
-          processDiscs:
-            Array.isArray(d.processDiscs) && d.processDiscs.length > 0
-              ? upgradeBuiltinProcessDiscs(d.processDiscs as ProcessLogicDisc[])
-              : fallbackStd.processDiscs
-              ? upgradeBuiltinProcessDiscs(structuredClone(fallbackStd.processDiscs))
-              : undefined,
         },
         autoCutList: Array.isArray(d.autoCutList) ? d.autoCutList : [],
         feederList: Array.isArray(d.feederList) ? d.feederList : [],
+        pendingMasterSync:
+          typeof d.pendingMasterSync === 'boolean' ? d.pendingMasterSync : undefined,
+        updatedByName: typeof d.updatedByName === 'string' ? d.updatedByName : undefined,
       });
     },
     (error) => {
@@ -720,130 +833,44 @@ export function subscribeMasterConfig(
 let masterConfigWriteQueue: Promise<void> = Promise.resolve();
 
 export function saveMasterConfigToCloud(
-  uid: string,
+  actor: CloudActor,
   stdDb: StdDatabase,
   autoCutList: AutoCutItem[],
-  feederList: FeederItem[]
+  feederList: FeederItem[],
+  pendingMasterSync?: boolean
 ): Promise<void> {
-  const path = `masterConfigs/${uid}`;
-  const ref = doc(db, 'masterConfigs', uid);
-  const baseBody = {
+  const path = `masterConfigs/${SHARED_MASTER_DOC_ID}`;
+  const ref = doc(db, 'masterConfigs', SHARED_MASTER_DOC_ID);
+  const bodyFull: Record<string, unknown> = {
     params: cleanForFirestore(stdDb.params.slice(0, 300)),
     acMatrixMap: matrixToMap(stdDb.acMatrix),
     saMatrixMap: matrixToMap(stdDb.saMatrix),
     mcMatrixMap: matrixToMap(stdDb.mcMatrix),
+    cotMatrixMap: matrixToMap(stdDb.cotMatrix),
+    difficultyMatrixMap: matrixToMap(stdDb.difficultyMatrix),
     autoCutList: cleanForFirestore(autoCutList.slice(0, 2000)),
     feederList: cleanForFirestore(feederList.slice(0, 2000)),
+    updatedByUid: actor.uid,
+    updatedByName: (actor.name || 'User').slice(0, 120),
+    ...(typeof pendingMasterSync === 'boolean' ? { pendingMasterSync } : {}),
     updatedAt: serverTimestamp(),
-  };
-  const bodyWithDiscs = {
-    ...baseBody,
-    processDiscs: cleanForFirestore((stdDb.processDiscs ?? []).slice(0, 100)),
-  };
-  const bodyWithCot = {
-    ...bodyWithDiscs,
-    cotMatrixMap: matrixToMap(stdDb.cotMatrix),
-  };
-  const bodyFull = {
-    ...bodyWithCot,
-    settingWireMatrixMap: matrixToMap(stdDb.settingWireMatrix),
-  };
-  const bodyDifficulty = {
-    ...bodyFull,
-    difficultyMatrixMap: matrixToMap(stdDb.difficultyMatrix),
   };
 
   const runWrite = async () => {
     try {
       const snap = await getDoc(ref);
       if (snap.exists()) {
-        try {
-          await updateDoc(ref, bodyDifficulty);
-        } catch (innerErr) {
-          if (isPermissionDeniedError(innerErr)) {
-            try {
-              await updateDoc(ref, bodyFull);
-            } catch (innerErr0) {
-              if (isPermissionDeniedError(innerErr0)) {
-                try {
-                  await updateDoc(ref, bodyWithCot);
-                } catch (innerErr2) {
-                  if (isPermissionDeniedError(innerErr2)) {
-                    try {
-                      await updateDoc(ref, bodyWithDiscs);
-                    } catch (innerErr3) {
-                      if (isPermissionDeniedError(innerErr3)) {
-                        await updateDoc(ref, baseBody);
-                      } else {
-                        throw innerErr3;
-                      }
-                    }
-                  } else {
-                    throw innerErr2;
-                  }
-                }
-              } else {
-                throw innerErr0;
-              }
-            }
-          } else {
-            throw innerErr;
-          }
-        }
+        await updateDoc(ref, {
+          ...bodyFull,
+          processDiscs: deleteField(),
+          settingWireMatrixMap: deleteField(),
+        });
       } else {
-        try {
-          await setDoc(ref, {
-            ownerId: uid,
-            ...bodyDifficulty,
-            createdAt: serverTimestamp(),
-          });
-        } catch (innerErr) {
-          if (isPermissionDeniedError(innerErr)) {
-            try {
-              await setDoc(ref, {
-                ownerId: uid,
-                ...bodyFull,
-                createdAt: serverTimestamp(),
-              });
-            } catch (innerErr0) {
-              if (isPermissionDeniedError(innerErr0)) {
-                try {
-                  await setDoc(ref, {
-                    ownerId: uid,
-                    ...bodyWithCot,
-                    createdAt: serverTimestamp(),
-                  });
-                } catch (innerErr2) {
-                  if (isPermissionDeniedError(innerErr2)) {
-                    try {
-                      await setDoc(ref, {
-                        ownerId: uid,
-                        ...bodyWithDiscs,
-                        createdAt: serverTimestamp(),
-                      });
-                    } catch (innerErr3) {
-                      if (isPermissionDeniedError(innerErr3)) {
-                        await setDoc(ref, {
-                          ownerId: uid,
-                          ...baseBody,
-                          createdAt: serverTimestamp(),
-                        });
-                      } else {
-                        throw innerErr3;
-                      }
-                    }
-                  } else {
-                    throw innerErr2;
-                  }
-                }
-              } else {
-                throw innerErr0;
-              }
-            }
-          } else {
-            throw innerErr;
-          }
-        }
+        await setDoc(ref, {
+          ownerId: actor.uid,
+          ...bodyFull,
+          createdAt: serverTimestamp(),
+        });
       }
     } catch (error) {
       handleFirestoreError(error, OperationType.WRITE, path);
@@ -855,63 +882,234 @@ export function saveMasterConfigToCloud(
   return nextOp;
 }
 
-export function subscribeAssyRecords(
-  uid: string,
-  onData: (records: AssyRecord[]) => void,
-  onError: (err: Error) => void
-) {
-  const path = 'assyRecords';
-  const q = query(collection(db, 'assyRecords'), where('ownerId', '==', uid));
-  return onSnapshot(
-    q,
-    (snap) => {
-      const list: AssyRecord[] = snap.docs.map((docSnap) => {
-        const d = docSnap.data();
-        return {
-          id: String(d.id || docSnap.id),
-          createdAt: tsToIso(d.createdAt),
-          updatedAt: tsToIso(d.updatedAt),
-          params: d.params,
-          assemblyComponents: d.assemblyComponents,
-          partList: Array.isArray(d.partList) ? d.partList : [],
-          ppcsList: Array.isArray(d.ppcsList) ? d.ppcsList : [],
-          assemblyCotList: Array.isArray(d.assemblyCotList) ? d.assemblyCotList : [],
-          terminalRatios: d.terminalRatios || {},
-          calculation: d.calculation,
-        } as AssyRecord;
-      });
-      list.sort((a, b) => b.updatedAt.localeCompare(a.updatedAt));
-      onData(list);
-    },
-    (error) => {
-      try {
-        handleFirestoreError(error, OperationType.LIST, path);
-      } catch (e) {
-        onError(e as Error);
+export async function updateSharedPendingMasterSyncInCloud(
+  actor: CloudActor,
+  pendingMasterSync: boolean
+): Promise<void> {
+  const path = `masterConfigs/${SHARED_MASTER_DOC_ID}`;
+  try {
+    const ref = doc(db, 'masterConfigs', SHARED_MASTER_DOC_ID);
+    const snap = await getDoc(ref);
+    if (!snap.exists()) return;
+    await updateDoc(ref, {
+      pendingMasterSync,
+      updatedByUid: actor.uid,
+      updatedByName: (actor.name || 'User').slice(0, 120),
+      updatedAt: serverTimestamp(),
+    });
+  } catch (error) {
+    handleFirestoreError(error, OperationType.UPDATE, path);
+  }
+}
+
+/**
+ * Server-side cursor-based pagination for `assyRecords` (fetches ONLY `pageSize` = 33 items per request).
+ * Uses `orderBy('updatedAt', 'desc')` with `limit(pageSize + 1)` and optional `startAfter(cursor)`.
+ */
+export async function fetchAssyRecordsPage(options: {
+  cursor?: QueryDocumentSnapshot<DocumentData> | null;
+  pageSize?: number;
+  stdDb?: StdDatabase;
+  autoCutList?: AutoCutItem[];
+  feederList?: FeederItem[];
+}): Promise<AssyPageResult> {
+  const pageSize = options.pageSize ?? ASSY_PAGE_SIZE;
+  const recalcContext =
+    options.stdDb && options.autoCutList && options.feederList
+      ? {
+          stdDb: options.stdDb,
+          autoCutList: options.autoCutList,
+          feederList: options.feederList,
+        }
+      : undefined;
+
+  const activeRecords: AssyRecord[] = [];
+  const activeSnaps: QueryDocumentSnapshot<DocumentData>[] = [];
+  let currentCursor = options.cursor ?? null;
+  let hasMore = false;
+  let loopGuard = 0;
+
+  try {
+    while (activeRecords.length < pageSize && loopGuard < 5) {
+      loopGuard += 1;
+      const remaining = pageSize - activeRecords.length;
+      const fetchLimit = remaining + 1;
+      const q = currentCursor
+        ? query(
+            collection(db, 'assyRecords'),
+            orderBy('updatedAt', 'desc'),
+            startAfter(currentCursor),
+            limit(fetchLimit)
+          )
+        : query(collection(db, 'assyRecords'), orderBy('updatedAt', 'desc'), limit(fetchLimit));
+
+      const snap = await getDocs(q);
+      if (snap.empty) {
+        hasMore = false;
+        break;
+      }
+
+      const docs = snap.docs;
+      let exhaustedBatch = true;
+      for (let i = 0; i < docs.length; i += 1) {
+        const docSnap = docs[i];
+        const data = docSnap.data() as Record<string, unknown>;
+        const rec = hydrateAssyRecordFromDoc(docSnap.id, data, recalcContext);
+        if (rec.params?._recycleBinMeta) {
+          continue;
+        }
+        if (activeRecords.length < pageSize) {
+          activeRecords.push(rec);
+          activeSnaps.push(docSnap);
+        } else {
+          hasMore = true;
+          exhaustedBatch = false;
+          break;
+        }
+      }
+
+      if (!exhaustedBatch) {
+        break;
+      }
+
+      if (docs.length < fetchLimit) {
+        hasMore = false;
+        break;
+      }
+
+      currentCursor = docs[docs.length - 1];
+      if (activeRecords.length >= pageSize) {
+        // Need to know if there's at least 1 more active doc after this cursor
+        hasMore = true;
+        break;
       }
     }
-  );
+
+    return {
+      records: activeRecords,
+      firstDoc: activeSnaps[0] ?? null,
+      lastDoc: activeSnaps[activeSnaps.length - 1] ?? null,
+      hasMore,
+    };
+  } catch (error) {
+    handleFirestoreError(error, OperationType.LIST, 'assyRecords');
+  }
+}
+
+/**
+ * Fetches total document count in `assyRecords` from server without downloading all documents.
+ */
+export async function fetchAssyTotalCount(): Promise<number> {
+  try {
+    const snap = await getCountFromServer(collection(db, 'assyRecords'));
+    return snap.data().count;
+  } catch (error) {
+    handleFirestoreError(error, OperationType.LIST, 'assyRecords');
+  }
+}
+
+/**
+ * On-demand full fetch of all active `assyRecords` ONLY for bulk operations
+ * (Refresh UMH, Batch Export ZIP, Daily Summary PDF, Backup JSON, or cross-page search).
+ */
+export async function fetchAllAssyRecordsFromCloud(
+  stdDb?: StdDatabase,
+  autoCutList?: AutoCutItem[],
+  feederList?: FeederItem[]
+): Promise<AssyRecord[]> {
+  const recalcContext =
+    stdDb && autoCutList && feederList ? { stdDb, autoCutList, feederList } : undefined;
+  try {
+    const q = query(collection(db, 'assyRecords'), orderBy('updatedAt', 'desc'));
+    const snap = await getDocs(q);
+    const list: AssyRecord[] = [];
+    snap.docs.forEach((docSnap) => {
+      const rec = hydrateAssyRecordFromDoc(
+        docSnap.id,
+        docSnap.data() as Record<string, unknown>,
+        recalcContext
+      );
+      if (!rec.params?._recycleBinMeta) {
+        list.push(rec);
+      }
+    });
+    return list;
+  } catch (error) {
+    handleFirestoreError(error, OperationType.LIST, 'assyRecords');
+  }
+}
+
+/**
+ * Checks Firestore server-side whether an Assy with the same `assyNo` already exists
+ * across the entire shared database (not just the currently visible 33-row page).
+ */
+export async function findDuplicateAssyInCloud(
+  assyNo: string,
+  excludeId?: string
+): Promise<DuplicateAssyMatch | null> {
+  const trimmed = assyNo.trim();
+  const norm = normalizeAssyNo(trimmed);
+  if (!norm) return null;
+
+  try {
+    const [byNormSnap, byExactSnap] = await Promise.all([
+      getDocs(query(collection(db, 'assyRecords'), where('assyNoNormalized', '==', norm), limit(5))),
+      getDocs(query(collection(db, 'assyRecords'), where('assyNo', '==', trimmed), limit(5))),
+    ]);
+
+    const seen = new Set<string>();
+    const combinedDocs = [...byNormSnap.docs, ...byExactSnap.docs];
+    for (const docSnap of combinedDocs) {
+      if (seen.has(docSnap.id)) continue;
+      seen.add(docSnap.id);
+
+      const d = docSnap.data() as Record<string, unknown>;
+      const recId = String(d.id || docSnap.id);
+      if (excludeId && (recId === excludeId || docSnap.id === excludeId)) continue;
+
+      const params = d.params as AssyRecord['params'] | undefined;
+      if (params?._recycleBinMeta) continue;
+
+      const foundAssyNo = String(d.assyNo || params?.assyNo || '').trim();
+      if (normalizeAssyNo(foundAssyNo) !== norm) continue;
+
+      return {
+        id: recId,
+        assyNo: foundAssyNo,
+        customer: String(d.customer || params?.customer || ''),
+        createdByName: typeof d.createdByName === 'string' ? d.createdByName : undefined,
+        updatedAt: tsToIso(d.updatedAt),
+      };
+    }
+
+    return null;
+  } catch (error) {
+    handleFirestoreError(error, OperationType.LIST, 'assyRecords');
+  }
 }
 
 export async function upsertAssyRecordInCloud(
-  uid: string,
+  actor: CloudActor,
   record: AssyRecord
 ): Promise<AssyRecord> {
-  const scopedId = toScopedDocId(uid, record.id);
-  const path = `assyRecords/${scopedId}`;
-  const fields = buildAssyPayloadFields(uid, record, scopedId);
+  const docId = toSharedDocId(record.id, 'assy');
+  const path = `assyRecords/${docId}`;
+  const ref = doc(db, 'assyRecords', docId);
 
   let existsInCloud = false;
   try {
-    const ownedSnap = await getDocs(
-      query(collection(db, 'assyRecords'), where('ownerId', '==', uid))
-    );
-    existsInCloud = ownedSnap.docs.some((d) => d.id === scopedId);
+    const existingSnap = await getDoc(ref);
+    existsInCloud = existingSnap.exists();
+    const existingData = existsInCloud
+      ? (existingSnap.data() as Record<string, unknown>)
+      : undefined;
 
-    const ref = doc(db, 'assyRecords', scopedId);
+    const fields = buildAssyPayloadFields(actor, record, docId, existingData);
+
     if (existsInCloud) {
-      await updateDoc(ref, {
+      const updateBody: Record<string, unknown> = {
         assyNo: fields.assyNo,
+        assyNoNormalized: fields.assyNoNormalized,
         customer: fields.customer,
         params: fields.params,
         assemblyComponents: fields.assemblyComponents,
@@ -920,8 +1118,18 @@ export async function upsertAssyRecordInCloud(
         assemblyCotList: fields.assemblyCotList,
         terminalRatios: fields.terminalRatios,
         calculation: fields.calculation,
+        updatedByUid: fields.updatedByUid,
+        updatedByName: fields.updatedByName,
+        ...(fields.updatedByEmail ? { updatedByEmail: fields.updatedByEmail } : {}),
         updatedAt: serverTimestamp(),
-      });
+      };
+      // Backfill createdBy* only if the legacy document does not have it yet
+      if (!existingData?.createdByUid && fields.createdByUid) {
+        updateBody.createdByUid = fields.createdByUid;
+        updateBody.createdByName = fields.createdByName;
+        if (fields.createdByEmail) updateBody.createdByEmail = fields.createdByEmail;
+      }
+      await updateDoc(ref, updateBody);
     } else {
       await setDoc(ref, {
         ...fields,
@@ -929,7 +1137,17 @@ export async function upsertAssyRecordInCloud(
         updatedAt: serverTimestamp(),
       });
     }
-    return { ...record, id: scopedId };
+
+    return {
+      ...record,
+      id: docId,
+      createdByUid: String(fields.createdByUid || actor.uid),
+      createdByName: String(fields.createdByName || actor.name),
+      createdByEmail: fields.createdByEmail ? String(fields.createdByEmail) : undefined,
+      updatedByUid: String(fields.updatedByUid || actor.uid),
+      updatedByName: String(fields.updatedByName || actor.name),
+      updatedByEmail: fields.updatedByEmail ? String(fields.updatedByEmail) : undefined,
+    };
   } catch (error) {
     handleFirestoreError(
       error,
@@ -940,120 +1158,135 @@ export async function upsertAssyRecordInCloud(
 }
 
 export async function batchUpdateAssyRecordsInCloud(
-  uid: string,
+  actor: CloudActor,
   records: AssyRecord[]
 ): Promise<void> {
   if (records.length === 0) return;
   const path = 'assyRecords';
   try {
-    const ownedSnap = await getDocs(
-      query(collection(db, 'assyRecords'), where('ownerId', '==', uid))
+    // Check existence per docId in parallel chunks
+    const docIds = records.map((r) => toSharedDocId(r.id, 'assy'));
+    const existingMap = new Map<string, Record<string, unknown>>();
+    await Promise.all(
+      docIds.map(async (id) => {
+        const snap = await getDoc(doc(db, 'assyRecords', id));
+        if (snap.exists()) {
+          existingMap.set(id, snap.data() as Record<string, unknown>);
+        }
+      })
     );
-    const existingIds = new Set<string>();
-    ownedSnap.forEach((d) => existingIds.add(d.id));
 
-    const batch = writeBatch(db);
-    records.forEach((rec) => {
-      const scopedId = toScopedDocId(uid, rec.id);
-      const ref = doc(db, 'assyRecords', scopedId);
-      const fields = buildAssyPayloadFields(uid, rec, scopedId);
-      if (existingIds.has(scopedId)) {
-        batch.update(ref, {
-          assyNo: fields.assyNo,
-          customer: fields.customer,
-          params: fields.params,
-          assemblyComponents: fields.assemblyComponents,
-          partList: fields.partList,
-          ppcsList: fields.ppcsList,
-          assemblyCotList: fields.assemblyCotList,
-          terminalRatios: fields.terminalRatios,
-          calculation: fields.calculation,
-          updatedAt: serverTimestamp(),
-        });
-      } else {
-        batch.set(ref, {
-          ...fields,
-          createdAt: serverTimestamp(),
-          updatedAt: serverTimestamp(),
-        });
-      }
-    });
-    await batch.commit();
+    const CHUNK = 200;
+    for (let i = 0; i < records.length; i += CHUNK) {
+      const slice = records.slice(i, i + CHUNK);
+      const batch = writeBatch(db);
+      slice.forEach((rec) => {
+        const docId = toSharedDocId(rec.id, 'assy');
+        const ref = doc(db, 'assyRecords', docId);
+        const existingData = existingMap.get(docId);
+        const fields = buildAssyPayloadFields(actor, rec, docId, existingData);
+        if (existingData) {
+          const updateBody: Record<string, unknown> = {
+            assyNo: fields.assyNo,
+            assyNoNormalized: fields.assyNoNormalized,
+            customer: fields.customer,
+            params: fields.params,
+            assemblyComponents: fields.assemblyComponents,
+            partList: fields.partList,
+            ppcsList: fields.ppcsList,
+            assemblyCotList: fields.assemblyCotList,
+            terminalRatios: fields.terminalRatios,
+            calculation: fields.calculation,
+            updatedByUid: fields.updatedByUid,
+            updatedByName: fields.updatedByName,
+            ...(fields.updatedByEmail ? { updatedByEmail: fields.updatedByEmail } : {}),
+            updatedAt: serverTimestamp(),
+          };
+          if (!existingData.createdByUid && fields.createdByUid) {
+            updateBody.createdByUid = fields.createdByUid;
+            updateBody.createdByName = fields.createdByName;
+            if (fields.createdByEmail) updateBody.createdByEmail = fields.createdByEmail;
+          }
+          batch.update(ref, updateBody);
+        } else {
+          batch.set(ref, {
+            ...fields,
+            createdAt: serverTimestamp(),
+            updatedAt: serverTimestamp(),
+          });
+        }
+      });
+      await batch.commit();
+    }
   } catch (error) {
     handleFirestoreError(error, OperationType.WRITE, path);
   }
 }
 
-/**
- * Soft-deletes an AssyRecord in Firebase:
- * - Primary: atomic writeBatch creating `recycleBin/{binId}` + deleting `assyRecords/{scopedId}`.
- * - Fallback (when (default) DB does not yet have `/recycleBin` rules published):
- *   marks `params._recycleBinMeta` on `assyRecords/{scopedId}` so the soft-delete still persists on Firebase server.
- */
 export async function moveAssyRecordToRecycleBinInCloud(
-  uid: string,
+  actor: CloudActor,
   record: AssyRecord,
   binItem: RecycleBinItem,
   useDedicatedRecycleBin = true
 ): Promise<string> {
-  const scopedAssyId = toScopedDocId(uid, record.id);
-  const scopedBinId = toScopedDocId(uid, binItem.id);
+  const assyDocId = toSharedDocId(record.id, 'assy');
+  const binDocId = toSharedDocId(binItem.id, 'bin_assy');
 
   if (!useDedicatedRecycleBin) {
-    const assyPath = `assyRecords/${scopedAssyId}`;
+    const assyPath = `assyRecords/${assyDocId}`;
     try {
       const { _recycleBinMeta: _omit, ...cleanParams } = record.params;
-      await updateDoc(doc(db, 'assyRecords', scopedAssyId), {
+      await updateDoc(doc(db, 'assyRecords', assyDocId), {
         params: cleanForFirestore({
           ...cleanParams,
           _recycleBinMeta: {
-            binId: `inplace_${scopedAssyId}`,
+            binId: `inplace_${assyDocId}`,
             deletedAt: binItem.deletedAt,
           },
         }),
+        updatedByUid: actor.uid,
+        updatedByName: actor.name,
         updatedAt: serverTimestamp(),
       });
-      return `inplace_${scopedAssyId}`;
+      return `inplace_${assyDocId}`;
     } catch (error) {
       handleFirestoreError(error, OperationType.UPDATE, assyPath);
     }
   }
 
-  const path = `recycleBin/${scopedBinId}`;
+  const path = `recycleBin/${binDocId}`;
   try {
-    const ownedSnap = await getDocs(
-      query(collection(db, 'assyRecords'), where('ownerId', '==', uid))
-    );
-    const existsInCloud = ownedSnap.docs.some((d) => d.id === scopedAssyId);
-
+    const existingSnap = await getDoc(doc(db, 'assyRecords', assyDocId));
     const batch = writeBatch(db);
     batch.set(
-      doc(db, 'recycleBin', scopedBinId),
-      buildRecycleBinFirestoreDoc(uid, { ...binItem, originalId: scopedAssyId }, scopedBinId)
+      doc(db, 'recycleBin', binDocId),
+      buildRecycleBinFirestoreDoc(actor.uid, { ...binItem, originalId: assyDocId }, binDocId)
     );
-    if (existsInCloud) {
-      batch.delete(doc(db, 'assyRecords', scopedAssyId));
+    if (existingSnap.exists()) {
+      batch.delete(doc(db, 'assyRecords', assyDocId));
     }
     await batch.commit();
-    return scopedBinId;
+    return binDocId;
   } catch (error) {
     if (isPermissionDeniedError(error)) {
-      return moveAssyRecordToRecycleBinInCloud(uid, record, binItem, false);
+      return moveAssyRecordToRecycleBinInCloud(actor, record, binItem, false);
     }
     handleFirestoreError(error, OperationType.WRITE, path);
   }
 }
 
 export async function restoreInPlaceAssyInCloud(
-  uid: string,
+  actor: CloudActor,
   record: AssyRecord
 ): Promise<void> {
-  const scopedAssyId = toScopedDocId(uid, record.id);
-  const path = `assyRecords/${scopedAssyId}`;
+  const assyDocId = toSharedDocId(record.id, 'assy');
+  const path = `assyRecords/${assyDocId}`;
   try {
     const { _recycleBinMeta: _omit, ...cleanParams } = record.params;
-    await updateDoc(doc(db, 'assyRecords', scopedAssyId), {
+    await updateDoc(doc(db, 'assyRecords', assyDocId), {
       params: cleanForFirestore(cleanParams),
+      updatedByUid: actor.uid,
+      updatedByName: actor.name,
       updatedAt: serverTimestamp(),
     });
   } catch (error) {
@@ -1061,18 +1294,13 @@ export async function restoreInPlaceAssyInCloud(
   }
 }
 
-export async function permanentlyDeleteInPlaceAssyInCloud(
-  uid: string,
-  originalId: string
-): Promise<void> {
-  const scopedAssyId = toScopedDocId(uid, originalId);
-  const path = `assyRecords/${scopedAssyId}`;
+export async function permanentlyDeleteInPlaceAssyInCloud(originalId: string): Promise<void> {
+  const assyDocId = toSharedDocId(originalId, 'assy');
+  const path = `assyRecords/${assyDocId}`;
   try {
-    const ownedSnap = await getDocs(
-      query(collection(db, 'assyRecords'), where('ownerId', '==', uid))
-    );
-    if (ownedSnap.docs.some((d) => d.id === scopedAssyId)) {
-      await deleteDoc(doc(db, 'assyRecords', scopedAssyId));
+    const existingSnap = await getDoc(doc(db, 'assyRecords', assyDocId));
+    if (existingSnap.exists()) {
+      await deleteDoc(doc(db, 'assyRecords', assyDocId));
     }
   } catch (error) {
     handleFirestoreError(error, OperationType.DELETE, path);
@@ -1120,13 +1348,12 @@ function parseMasterHistoryDoc(
 }
 
 export function subscribeRefreshHistory(
-  uid: string,
   onData: (entries: RefreshHistoryEntry[]) => void,
   onError: (err: Error) => void,
   onMasterHistory?: (entries: MasterChangeHistoryEntry[]) => void
 ) {
   const path = 'refreshHistory';
-  const q = query(collection(db, 'refreshHistory'), where('ownerId', '==', uid));
+  const q = query(collection(db, 'refreshHistory'));
   return onSnapshot(
     q,
     (snap) => {
@@ -1173,11 +1400,11 @@ export async function createRefreshHistoryInCloud(
   uid: string,
   entry: RefreshHistoryEntry
 ): Promise<RefreshHistoryEntry> {
-  const scopedId = toScopedDocId(uid, entry.id);
-  const path = `refreshHistory/${scopedId}`;
+  const docId = toSharedDocId(entry.id, 'hist');
+  const path = `refreshHistory/${docId}`;
   try {
-    await setDoc(doc(db, 'refreshHistory', scopedId), {
-      id: scopedId,
+    await setDoc(doc(db, 'refreshHistory', docId), {
+      id: docId,
       ownerId: uid,
       refreshedAt: serverTimestamp(),
       responsibleName: (entry.responsibleName || 'PIC').slice(0, 120),
@@ -1187,7 +1414,7 @@ export async function createRefreshHistoryInCloud(
       affectedDiffs: cleanForFirestore(entry.affectedDiffs.slice(0, 500)),
       createdAt: serverTimestamp(),
     });
-    return { ...entry, id: scopedId };
+    return { ...entry, id: docId };
   } catch (error) {
     handleFirestoreError(error, OperationType.CREATE, path);
   }
@@ -1197,16 +1424,16 @@ export async function createMasterChangeHistoryInCloud(
   uid: string,
   entry: MasterChangeHistoryEntry
 ): Promise<MasterChangeHistoryEntry> {
-  const scopedId = toScopedDocId(uid, entry.id);
-  const path = `refreshHistory/${scopedId}`;
+  const docId = toSharedDocId(entry.id, 'mhist');
+  const path = `refreshHistory/${docId}`;
   const totalChanged = entry.addedCount + entry.modifiedCount + entry.removedCount;
   const clampedTotal = Math.max(0, Math.min(1000, entry.totalItemsCount));
   const clampedChanged = Math.max(0, Math.min(1000, totalChanged));
   const clampedUnchanged = Math.max(0, Math.min(1000, Math.max(0, clampedTotal - clampedChanged)));
 
   try {
-    await setDoc(doc(db, 'refreshHistory', scopedId), {
-      id: scopedId,
+    await setDoc(doc(db, 'refreshHistory', docId), {
+      id: docId,
       ownerId: uid,
       refreshedAt: serverTimestamp(),
       responsibleName: (entry.responsibleName || 'PIC').slice(0, 120),
@@ -1228,50 +1455,35 @@ export async function createMasterChangeHistoryInCloud(
       ],
       createdAt: serverTimestamp(),
     });
-    return { ...entry, id: scopedId };
+    return { ...entry, id: docId };
   } catch (error) {
     handleFirestoreError(error, OperationType.CREATE, path);
   }
 }
 
-export async function deleteMasterChangeHistoryInCloud(
-  uid: string,
-  entryId: string
-): Promise<void> {
-  const scopedId = toScopedDocId(uid, entryId);
-  const path = `refreshHistory/${scopedId}`;
+export async function deleteMasterChangeHistoryInCloud(entryId: string): Promise<void> {
+  const docId = toSharedDocId(entryId, 'mhist');
+  const path = `refreshHistory/${docId}`;
   try {
-    const ownedSnap = await getDocs(
-      query(collection(db, 'refreshHistory'), where('ownerId', '==', uid))
-    );
-    if (ownedSnap.docs.some((d) => d.id === scopedId)) {
-      await deleteDoc(doc(db, 'refreshHistory', scopedId));
+    const snap = await getDoc(doc(db, 'refreshHistory', docId));
+    if (snap.exists()) {
+      await deleteDoc(doc(db, 'refreshHistory', docId));
     }
   } catch (error) {
     handleFirestoreError(error, OperationType.DELETE, path);
   }
 }
 
-export async function clearMasterChangeHistoryInCloud(
-  uid: string,
-  entryIds: string[]
-): Promise<void> {
+export async function clearMasterChangeHistoryInCloud(entryIds: string[]): Promise<void> {
   if (entryIds.length === 0) return;
   const path = 'refreshHistory';
   try {
-    const ownedSnap = await getDocs(
-      query(collection(db, 'refreshHistory'), where('ownerId', '==', uid))
-    );
-    const existingIds = new Set(ownedSnap.docs.map((d) => d.id));
-    const toDelete = entryIds
-      .map((id) => toScopedDocId(uid, id))
-      .filter((sid) => existingIds.has(sid));
-
+    const uniqueIds = Array.from(new Set(entryIds.map((id) => toSharedDocId(id, 'mhist'))));
     const CHUNK = 200;
-    for (let i = 0; i < toDelete.length; i += CHUNK) {
+    for (let i = 0; i < uniqueIds.length; i += CHUNK) {
       const batch = writeBatch(db);
-      toDelete.slice(i, i + CHUNK).forEach((sid) => {
-        batch.delete(doc(db, 'refreshHistory', sid));
+      uniqueIds.slice(i, i + CHUNK).forEach((docId) => {
+        batch.delete(doc(db, 'refreshHistory', docId));
       });
       await batch.commit();
     }
@@ -1280,41 +1492,34 @@ export async function clearMasterChangeHistoryInCloud(
   }
 }
 
-/**
- * Soft-deletes a RefreshHistoryEntry into Firebase `recycleBin` (or deletes active doc cleanly if /recycleBin rules pending).
- */
 export async function moveRefreshHistoryToRecycleBinInCloud(
   uid: string,
   entry: RefreshHistoryEntry,
   binItem: RecycleBinItem,
   useDedicatedRecycleBin = true
 ): Promise<string> {
-  const scopedHistId = toScopedDocId(uid, entry.id);
-  const scopedBinId = toScopedDocId(uid, binItem.id);
-  const path = useDedicatedRecycleBin ? `recycleBin/${scopedBinId}` : `refreshHistory/${scopedHistId}`;
+  const histDocId = toSharedDocId(entry.id, 'hist');
+  const binDocId = toSharedDocId(binItem.id, 'bin_hist');
+  const path = useDedicatedRecycleBin ? `recycleBin/${binDocId}` : `refreshHistory/${histDocId}`;
   try {
-    const ownedSnap = await getDocs(
-      query(collection(db, 'refreshHistory'), where('ownerId', '==', uid))
-    );
-    const existsInCloud = ownedSnap.docs.some((d) => d.id === scopedHistId);
-
+    const snap = await getDoc(doc(db, 'refreshHistory', histDocId));
     if (!useDedicatedRecycleBin) {
-      if (existsInCloud) {
-        await deleteDoc(doc(db, 'refreshHistory', scopedHistId));
+      if (snap.exists()) {
+        await deleteDoc(doc(db, 'refreshHistory', histDocId));
       }
-      return scopedBinId;
+      return binDocId;
     }
 
     const batch = writeBatch(db);
     batch.set(
-      doc(db, 'recycleBin', scopedBinId),
-      buildRecycleBinFirestoreDoc(uid, { ...binItem, originalId: scopedHistId }, scopedBinId)
+      doc(db, 'recycleBin', binDocId),
+      buildRecycleBinFirestoreDoc(uid, { ...binItem, originalId: histDocId }, binDocId)
     );
-    if (existsInCloud) {
-      batch.delete(doc(db, 'refreshHistory', scopedHistId));
+    if (snap.exists()) {
+      batch.delete(doc(db, 'refreshHistory', histDocId));
     }
     await batch.commit();
-    return scopedBinId;
+    return binDocId;
   } catch (error) {
     if (useDedicatedRecycleBin && isPermissionDeniedError(error)) {
       return moveRefreshHistoryToRecycleBinInCloud(uid, entry, binItem, false);
@@ -1323,9 +1528,6 @@ export async function moveRefreshHistoryToRecycleBinInCloud(
   }
 }
 
-/**
- * Soft-deletes multiple RefreshHistoryEntry documents into Firebase `recycleBin` (with fallback if /recycleBin rules pending).
- */
 export async function moveManyRefreshHistoryToRecycleBinInCloud(
   uid: string,
   pairs: { entry: RefreshHistoryEntry; binItem: RecycleBinItem }[],
@@ -1334,28 +1536,20 @@ export async function moveManyRefreshHistoryToRecycleBinInCloud(
   if (pairs.length === 0) return;
   const path = useDedicatedRecycleBin ? 'recycleBin' : 'refreshHistory';
   try {
-    const ownedSnap = await getDocs(
-      query(collection(db, 'refreshHistory'), where('ownerId', '==', uid))
-    );
-    const existingIds = new Set<string>();
-    ownedSnap.forEach((d) => existingIds.add(d.id));
-
     const CHUNK = 200;
     for (let i = 0; i < pairs.length; i += CHUNK) {
       const slice = pairs.slice(i, i + CHUNK);
       const batch = writeBatch(db);
       slice.forEach(({ entry, binItem }) => {
-        const scopedHistId = toScopedDocId(uid, entry.id);
-        const scopedBinId = toScopedDocId(uid, binItem.id);
+        const histDocId = toSharedDocId(entry.id, 'hist');
+        const binDocId = toSharedDocId(binItem.id, 'bin_hist');
         if (useDedicatedRecycleBin) {
           batch.set(
-            doc(db, 'recycleBin', scopedBinId),
-            buildRecycleBinFirestoreDoc(uid, { ...binItem, originalId: scopedHistId }, scopedBinId)
+            doc(db, 'recycleBin', binDocId),
+            buildRecycleBinFirestoreDoc(uid, { ...binItem, originalId: histDocId }, binDocId)
           );
         }
-        if (existingIds.has(scopedHistId)) {
-          batch.delete(doc(db, 'refreshHistory', scopedHistId));
-        }
+        batch.delete(doc(db, 'refreshHistory', histDocId));
       });
       await batch.commit();
     }
@@ -1367,53 +1561,56 @@ export async function moveManyRefreshHistoryToRecycleBinInCloud(
   }
 }
 
-/**
- * Saves a soft-deleted master item (Auto-Cut terminal, Feeder seal, or Custom Logic Disc)
- * into the Firebase `recycleBin` directory.
- */
 export async function addMasterItemToRecycleBinInCloud(
   uid: string,
   binItem: RecycleBinItem
 ): Promise<string> {
-  const scopedBinId = toScopedDocId(uid, binItem.id);
-  const path = `recycleBin/${scopedBinId}`;
+  const binDocId = toSharedDocId(binItem.id, 'bin');
+  const path = `recycleBin/${binDocId}`;
   try {
     await setDoc(
-      doc(db, 'recycleBin', scopedBinId),
-      buildRecycleBinFirestoreDoc(uid, binItem, scopedBinId)
+      doc(db, 'recycleBin', binDocId),
+      buildRecycleBinFirestoreDoc(uid, binItem, binDocId)
     );
-    return scopedBinId;
+    return binDocId;
   } catch (error) {
     handleFirestoreError(error, OperationType.CREATE, path);
   }
 }
 
 export function subscribeRecycleBin(
-  uid: string,
   onData: (items: RecycleBinItem[]) => void,
   onError: (err: Error) => void
 ) {
   const path = 'recycleBin';
-  const q = query(collection(db, 'recycleBin'), where('ownerId', '==', uid));
+  const q = query(collection(db, 'recycleBin'));
+  const validTypes = new Set<string>([
+    'assy_record',
+    'refresh_history',
+    'auto_cut_item',
+    'feeder_item',
+  ]);
   return onSnapshot(
     q,
     (snap) => {
-      const items: RecycleBinItem[] = snap.docs.map((docSnap) => {
-        const d = docSnap.data();
-        return {
-          id: String(d.id || docSnap.id),
-          itemType: d.itemType as RecycleBinItemType,
-          originalCollection: d.originalCollection as RecycleBinOriginalCollection,
-          originalId: String(d.originalId || ''),
-          title: String(d.title || 'Item'),
-          subtitle: String(d.subtitle || ''),
-          deletedAt: tsToIso(d.deletedAt),
-          payload: (d.payload && typeof d.payload === 'object' ? d.payload : {}) as Record<
-            string,
-            unknown
-          >,
-        };
-      });
+      const items: RecycleBinItem[] = snap.docs
+        .map((docSnap) => {
+          const d = docSnap.data();
+          return {
+            id: String(d.id || docSnap.id),
+            itemType: d.itemType as RecycleBinItemType,
+            originalCollection: d.originalCollection as RecycleBinOriginalCollection,
+            originalId: String(d.originalId || ''),
+            title: String(d.title || 'Item'),
+            subtitle: String(d.subtitle || ''),
+            deletedAt: tsToIso(d.deletedAt),
+            payload: (d.payload && typeof d.payload === 'object' ? d.payload : {}) as Record<
+              string,
+              unknown
+            >,
+          };
+        })
+        .filter((item) => validTypes.has(item.itemType));
       items.sort((a, b) => b.deletedAt.localeCompare(a.deletedAt));
       onData(items);
     },
@@ -1427,75 +1624,68 @@ export function subscribeRecycleBin(
   );
 }
 
-/**
- * Atomically restores an AssyRecord from Firebase `recycleBin` back to `assyRecords`.
- */
 export async function restoreAssyFromRecycleBinInCloud(
-  uid: string,
+  actor: CloudActor,
   binItem: RecycleBinItem,
   restoredRecord: AssyRecord
 ): Promise<AssyRecord> {
-  const scopedBinId = toScopedDocId(uid, binItem.id);
-  const path = `recycleBin/${scopedBinId}`;
+  const binDocId = toSharedDocId(binItem.id, 'bin_assy');
+  const path = `recycleBin/${binDocId}`;
   try {
-    const [ownedAssySnap, ownedBinSnap] = await Promise.all([
-      getDocs(query(collection(db, 'assyRecords'), where('ownerId', '==', uid))),
-      getDocs(query(collection(db, 'recycleBin'), where('ownerId', '==', uid))),
+    let targetAssyId = toSharedDocId(binItem.originalId || restoredRecord.id, 'assy');
+    const [existingAssySnap, existingBinSnap] = await Promise.all([
+      getDoc(doc(db, 'assyRecords', targetAssyId)),
+      getDoc(doc(db, 'recycleBin', binDocId)),
     ]);
-    const existingAssyIds = new Set<string>();
-    ownedAssySnap.forEach((d) => existingAssyIds.add(d.id));
-    const binExists = ownedBinSnap.docs.some((d) => d.id === scopedBinId);
 
-    let targetAssyId = toScopedDocId(uid, binItem.originalId || restoredRecord.id);
-    if (existingAssyIds.has(targetAssyId)) {
-      targetAssyId = toScopedDocId(
-        uid,
-        `restored_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`
-      );
+    if (existingAssySnap.exists()) {
+      targetAssyId = `restored_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`;
     }
 
-    const fields = buildAssyPayloadFields(uid, { ...restoredRecord, id: targetAssyId }, targetAssyId);
+    const fields = buildAssyPayloadFields(
+      actor,
+      { ...restoredRecord, id: targetAssyId },
+      targetAssyId
+    );
     const batch = writeBatch(db);
     batch.set(doc(db, 'assyRecords', targetAssyId), {
       ...fields,
       createdAt: serverTimestamp(),
       updatedAt: serverTimestamp(),
     });
-    if (binExists) {
-      batch.delete(doc(db, 'recycleBin', scopedBinId));
+    if (existingBinSnap.exists()) {
+      batch.delete(doc(db, 'recycleBin', binDocId));
     }
     await batch.commit();
-    return { ...restoredRecord, id: targetAssyId };
+    return {
+      ...restoredRecord,
+      id: targetAssyId,
+      createdByUid: String(fields.createdByUid || actor.uid),
+      createdByName: String(fields.createdByName || actor.name),
+      updatedByUid: actor.uid,
+      updatedByName: actor.name,
+    };
   } catch (error) {
     handleFirestoreError(error, OperationType.WRITE, path);
   }
 }
 
-/**
- * Atomically restores a RefreshHistoryEntry from Firebase `recycleBin` back to `refreshHistory`.
- */
 export async function restoreHistoryFromRecycleBinInCloud(
   uid: string,
   binItem: RecycleBinItem,
   restoredEntry: RefreshHistoryEntry
 ): Promise<RefreshHistoryEntry> {
-  const scopedBinId = toScopedDocId(uid, binItem.id);
-  const path = `recycleBin/${scopedBinId}`;
+  const binDocId = toSharedDocId(binItem.id, 'bin_hist');
+  const path = `recycleBin/${binDocId}`;
   try {
-    const [ownedHistSnap, ownedBinSnap] = await Promise.all([
-      getDocs(query(collection(db, 'refreshHistory'), where('ownerId', '==', uid))),
-      getDocs(query(collection(db, 'recycleBin'), where('ownerId', '==', uid))),
+    let targetHistId = toSharedDocId(binItem.originalId || restoredEntry.id, 'hist');
+    const [existingHistSnap, existingBinSnap] = await Promise.all([
+      getDoc(doc(db, 'refreshHistory', targetHistId)),
+      getDoc(doc(db, 'recycleBin', binDocId)),
     ]);
-    const existingHistIds = new Set<string>();
-    ownedHistSnap.forEach((d) => existingHistIds.add(d.id));
-    const binExists = ownedBinSnap.docs.some((d) => d.id === scopedBinId);
 
-    let targetHistId = toScopedDocId(uid, binItem.originalId || restoredEntry.id);
-    if (existingHistIds.has(targetHistId)) {
-      targetHistId = toScopedDocId(
-        uid,
-        `restored_hist_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`
-      );
+    if (existingHistSnap.exists()) {
+      targetHistId = `restored_hist_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`;
     }
 
     const batch = writeBatch(db);
@@ -1510,8 +1700,8 @@ export async function restoreHistoryFromRecycleBinInCloud(
       affectedDiffs: cleanForFirestore((restoredEntry.affectedDiffs || []).slice(0, 500)),
       createdAt: serverTimestamp(),
     });
-    if (binExists) {
-      batch.delete(doc(db, 'recycleBin', scopedBinId));
+    if (existingBinSnap.exists()) {
+      batch.delete(doc(db, 'recycleBin', binDocId));
     }
     await batch.commit();
     return { ...restoredEntry, id: targetHistId };
@@ -1520,47 +1710,30 @@ export async function restoreHistoryFromRecycleBinInCloud(
   }
 }
 
-export async function permanentlyDeleteRecycleBinItemFromCloud(
-  uid: string,
-  binId: string
-): Promise<void> {
-  const scopedBinId = toScopedDocId(uid, binId);
-  const path = `recycleBin/${scopedBinId}`;
+export async function permanentlyDeleteRecycleBinItemFromCloud(binId: string): Promise<void> {
+  const binDocId = toSharedDocId(binId, 'bin');
+  const path = `recycleBin/${binDocId}`;
   try {
-    const ownedBinSnap = await getDocs(
-      query(collection(db, 'recycleBin'), where('ownerId', '==', uid))
-    );
-    if (ownedBinSnap.docs.some((d) => d.id === scopedBinId)) {
-      await deleteDoc(doc(db, 'recycleBin', scopedBinId));
+    const snap = await getDoc(doc(db, 'recycleBin', binDocId));
+    if (snap.exists()) {
+      await deleteDoc(doc(db, 'recycleBin', binDocId));
     }
   } catch (error) {
     handleFirestoreError(error, OperationType.DELETE, path);
   }
 }
 
-export async function emptyRecycleBinInCloud(
-  uid: string,
-  binIds: string[]
-): Promise<void> {
+export async function emptyRecycleBinInCloud(binIds: string[]): Promise<void> {
   if (binIds.length === 0) return;
   const path = 'recycleBin';
   try {
-    const ownedBinSnap = await getDocs(
-      query(collection(db, 'recycleBin'), where('ownerId', '==', uid))
-    );
-    const existingIds = new Set<string>();
-    ownedBinSnap.forEach((d) => existingIds.add(d.id));
-
-    const toDelete = Array.from(
-      new Set(binIds.map((id) => toScopedDocId(uid, id)).filter((id) => existingIds.has(id)))
-    );
-
+    const uniqueIds = Array.from(new Set(binIds.map((id) => toSharedDocId(id, 'bin'))));
     const CHUNK = 400;
-    for (let i = 0; i < toDelete.length; i += CHUNK) {
-      const slice = toDelete.slice(i, i + CHUNK);
+    for (let i = 0; i < uniqueIds.length; i += CHUNK) {
+      const slice = uniqueIds.slice(i, i + CHUNK);
       const batch = writeBatch(db);
-      slice.forEach((scopedId) => {
-        batch.delete(doc(db, 'recycleBin', scopedId));
+      slice.forEach((docId) => {
+        batch.delete(doc(db, 'recycleBin', docId));
       });
       await batch.commit();
     }
@@ -1570,47 +1743,39 @@ export async function emptyRecycleBinInCloud(
 }
 
 export async function replaceAllAssyRecordsInCloud(
-  uid: string,
+  actor: CloudActor,
   existingRecords: AssyRecord[],
   newRecords: AssyRecord[],
   useDedicatedRecycleBin = true
 ): Promise<AssyRecord[]> {
   const path = 'assyRecords';
   try {
-    const existingSnap = await getDocs(
-      query(collection(db, 'assyRecords'), where('ownerId', '==', uid))
-    );
-    const cloudExistingMap = new Map<string, AssyRecord>();
+    const existingSnap = await getDocs(collection(db, 'assyRecords'));
+    const cloudExistingMap = new Map<string, { raw: Record<string, unknown>; rec: AssyRecord }>();
     existingSnap.forEach((docSnap) => {
-      const d = docSnap.data();
+      const d = docSnap.data() as Record<string, unknown>;
       cloudExistingMap.set(docSnap.id, {
-        id: String(d.id || docSnap.id),
-        createdAt: tsToIso(d.createdAt),
-        updatedAt: tsToIso(d.updatedAt),
-        params: d.params,
-        assemblyComponents: d.assemblyComponents,
-        partList: Array.isArray(d.partList) ? d.partList : [],
-        ppcsList: Array.isArray(d.ppcsList) ? d.ppcsList : [],
-        assemblyCotList: Array.isArray(d.assemblyCotList) ? d.assemblyCotList : [],
-        terminalRatios: d.terminalRatios || {},
-        calculation: d.calculation,
-      } as AssyRecord);
+        raw: d,
+        rec: hydrateAssyRecordFromDoc(docSnap.id, d),
+      });
     });
 
     const batch = writeBatch(db);
-    const newScopedIds = new Set<string>();
+    const newDocIds = new Set<string>();
     const resultRecords: AssyRecord[] = [];
 
     newRecords.forEach((rec) => {
-      const scopedId = toScopedDocId(uid, rec.id);
-      newScopedIds.add(scopedId);
+      const docId = toSharedDocId(rec.id, 'assy');
+      newDocIds.add(docId);
       const { _recycleBinMeta: _omit, ...cleanParams } = rec.params;
       const cleanRec = { ...rec, params: cleanParams };
-      const fields = buildAssyPayloadFields(uid, cleanRec, scopedId);
-      const ref = doc(db, 'assyRecords', scopedId);
-      if (cloudExistingMap.has(scopedId)) {
-        batch.update(ref, {
+      const existingEntry = cloudExistingMap.get(docId);
+      const fields = buildAssyPayloadFields(actor, cleanRec, docId, existingEntry?.raw);
+      const ref = doc(db, 'assyRecords', docId);
+      if (existingEntry) {
+        const updateBody: Record<string, unknown> = {
           assyNo: fields.assyNo,
+          assyNoNormalized: fields.assyNoNormalized,
           customer: fields.customer,
           params: fields.params,
           assemblyComponents: fields.assemblyComponents,
@@ -1619,8 +1784,17 @@ export async function replaceAllAssyRecordsInCloud(
           assemblyCotList: fields.assemblyCotList,
           terminalRatios: fields.terminalRatios,
           calculation: fields.calculation,
+          updatedByUid: fields.updatedByUid,
+          updatedByName: fields.updatedByName,
+          ...(fields.updatedByEmail ? { updatedByEmail: fields.updatedByEmail } : {}),
           updatedAt: serverTimestamp(),
-        });
+        };
+        if (!existingEntry.raw.createdByUid && fields.createdByUid) {
+          updateBody.createdByUid = fields.createdByUid;
+          updateBody.createdByName = fields.createdByName;
+          if (fields.createdByEmail) updateBody.createdByEmail = fields.createdByEmail;
+        }
+        batch.update(ref, updateBody);
       } else {
         batch.set(ref, {
           ...fields,
@@ -1628,32 +1802,40 @@ export async function replaceAllAssyRecordsInCloud(
           updatedAt: serverTimestamp(),
         });
       }
-      resultRecords.push({ ...cleanRec, id: scopedId });
+      resultRecords.push({
+        ...cleanRec,
+        id: docId,
+        createdByUid: String(fields.createdByUid || actor.uid),
+        createdByName: String(fields.createdByName || actor.name),
+        updatedByUid: actor.uid,
+        updatedByName: actor.name,
+      });
     });
 
-    // Move any replaced/removed active Assy records into Recycle Bin instead of hard deleting
-    const localMap = new Map(existingRecords.map((r) => [toScopedDocId(uid, r.id), r]));
-    cloudExistingMap.forEach((cloudRec, scopedId) => {
+    const localMap = new Map(existingRecords.map((r) => [toSharedDocId(r.id, 'assy'), r]));
+    cloudExistingMap.forEach(({ rec: cloudRec }, docId) => {
       if (cloudRec.params?._recycleBinMeta) return;
-      if (!newScopedIds.has(scopedId)) {
-        const snapshotRec = localMap.get(scopedId) ?? cloudRec;
+      if (!newDocIds.has(docId)) {
+        const snapshotRec = localMap.get(docId) ?? cloudRec;
         const binItem = buildRecycleBinItemFromAssy(snapshotRec);
         if (useDedicatedRecycleBin) {
-          const scopedBinId = toScopedDocId(uid, binItem.id);
+          const binDocId = toSharedDocId(binItem.id, 'bin_assy');
           batch.set(
-            doc(db, 'recycleBin', scopedBinId),
-            buildRecycleBinFirestoreDoc(uid, { ...binItem, originalId: scopedId }, scopedBinId)
+            doc(db, 'recycleBin', binDocId),
+            buildRecycleBinFirestoreDoc(actor.uid, { ...binItem, originalId: docId }, binDocId)
           );
-          batch.delete(doc(db, 'assyRecords', scopedId));
+          batch.delete(doc(db, 'assyRecords', docId));
         } else {
-          batch.update(doc(db, 'assyRecords', scopedId), {
+          batch.update(doc(db, 'assyRecords', docId), {
             params: cleanForFirestore({
               ...snapshotRec.params,
               _recycleBinMeta: {
-                binId: `inplace_${scopedId}`,
+                binId: `inplace_${docId}`,
                 deletedAt: binItem.deletedAt,
               },
             }),
+            updatedByUid: actor.uid,
+            updatedByName: actor.name,
             updatedAt: serverTimestamp(),
           });
         }
@@ -1664,7 +1846,7 @@ export async function replaceAllAssyRecordsInCloud(
     return resultRecords;
   } catch (error) {
     if (useDedicatedRecycleBin && isPermissionDeniedError(error)) {
-      return replaceAllAssyRecordsInCloud(uid, existingRecords, newRecords, false);
+      return replaceAllAssyRecordsInCloud(actor, existingRecords, newRecords, false);
     }
     handleFirestoreError(error, OperationType.WRITE, path);
   }

@@ -1,6 +1,5 @@
-import { DEFAULT_COT_MATRIX, DEFAULT_SETTING_WIRE_MATRIX, DEFAULT_DIFFICULTY_MATRIX } from './cotMasterV2';
+import { DEFAULT_COT_MATRIX, DEFAULT_DIFFICULTY_MATRIX } from './cotMasterV2';
 import {
-  AssyInputPayload,
   AutoCutItem,
   FeederItem,
   ProcessId,
@@ -168,7 +167,6 @@ export const DEFAULT_STD_DATABASE: StdDatabase = {
     [180, 240, 780, 1560],
   ],
   cotMatrix: structuredClone(DEFAULT_COT_MATRIX),
-  settingWireMatrix: structuredClone(DEFAULT_SETTING_WIRE_MATRIX),
   difficultyMatrix: structuredClone(DEFAULT_DIFFICULTY_MATRIX),
   params: [
     { id: 'ac_rep_app', sheet: 'Autocutting', stage: 'Dandori', name: 'Replace applicator & terminals', basis: 'sec/lot', val: 210 },
@@ -344,13 +342,9 @@ export const DEFAULT_STD_DATABASE: StdDatabase = {
     { id: 'as_tr_in', sheet: 'Assembly', stage: 'Persiapan', name: 'Wire Transport (bawa gulungan ke jig)', basis: 'sec/unit(pcs)', val: 30 },
     { id: 'as_untangle', sheet: 'Assembly', stage: 'Persiapan', name: 'Urai Gulungan Wire Panjang (>2500 mm)', basis: 'sec/unit(pcs)', val: 2 },
     { id: 'as_set_mm', sheet: 'Assembly', stage: 'Setting Wire', name: 'Setting Wires on Board (per mm panjang COT berbobot diameter × density PPCS)', basis: 'sec/unit(pcs)', val: 0.18 },
-    { id: 'as_tap_non_cot', sheet: 'Assembly', stage: 'Taping Non-COT', name: 'Taping Wire Non-COT (per mm)', basis: 'sec/unit(pcs)', val: 0.065628357 },
     { id: 'as_cot_pre', sheet: 'Assembly', stage: 'Master_COT_V2', name: 'Taping Pre-COT (Full/Half 25mm/Spot 150mm + 3.5s, per DIA)', basis: 'sec/unit(pcs)', val: 3.5 },
-    { id: 'as_cot_ins_b_base', sheet: 'Assembly', stage: 'Pemasangan COT', name: 'Pemasangan Selang COT-B / Slit — Base (per pcs)', basis: 'sec/unit(pcs)', val: 3.0 },
-    { id: 'as_cot_ins_b_mm', sheet: 'Assembly', stage: 'Pemasangan COT', name: 'Pemasangan Selang COT-B / Slit — Panjang (per mm)', basis: 'sec/unit(pcs)', val: 0.035 },
-    { id: 'as_cot_ins_h_base', sheet: 'Assembly', stage: 'Pemasangan COT', name: 'Pemasangan Selang H-COT / Non-Slit — Base (per pcs)', basis: 'sec/unit(pcs)', val: 5.0 },
-    { id: 'as_cot_ins_h_mm', sheet: 'Assembly', stage: 'Pemasangan COT', name: 'Pemasangan Selang H-COT / Non-Slit — Panjang (per mm)', basis: 'sec/unit(pcs)', val: 0.065 },
-    { id: 'as_cot_ujung', sheet: 'Assembly', stage: 'Master_COT_V2', name: 'Tutup Ujung & Taping Branch / Persimpangan COT (Multi-Branch D7–D36)', basis: 'sec/unit(pcs)', val: 3.2 },
+    { id: 'as_cot_ins_b_base', sheet: 'Assembly', stage: 'Pemasangan COT', name: 'Pemasangan Selang COT (COT-B & H-COT / Slit) — Base (per pcs)', basis: 'sec/unit(pcs)', val: 3.0 },
+    { id: 'as_cot_ins_b_mm', sheet: 'Assembly', stage: 'Pemasangan COT', name: 'Pemasangan Selang COT (COT-B & H-COT / Slit) — Panjang (per mm)', basis: 'sec/unit(pcs)', val: 0.035 },
     { id: 'as_cot_post', sheet: 'Assembly', stage: 'Master_COT_V2', name: 'Taping Post-COT (Full/Half 25mm/Spot 150mm + 3.5s, per DIA)', basis: 'sec/unit(pcs)', val: 3.5 },
     { id: 'as_mea', sheet: 'Assembly', stage: 'Measuring', name: 'Measuring dimensi panjang branch (+15% non-COT)', basis: 'sec/unit(pcs)', val: 9.24 },
     { id: 'as_mrk', sheet: 'Assembly', stage: 'Accessories', name: 'Attaching Markers (per nm)', basis: 'sec/unit(pcs)', val: 7.28 },
@@ -364,10 +358,8 @@ export const DEFAULT_STD_DATABASE: StdDatabase = {
     { id: 'as_tr_out', sheet: 'Assembly', stage: 'Finishing', name: 'Transport the Harness (1 pcs)', basis: 'sec/unit(pcs)', val: 40 },
     { id: 'in_vis_slope', sheet: 'Inspection', stage: 'Visual', name: 'Visual slope (per CCT * 86400)', basis: 'formula', val: 0.0001 },
     { id: 'in_vis_int', sheet: 'Inspection', stage: 'Visual', name: 'Visual intercept (* 86400)', basis: 'formula', val: 0.0083 },
-    { id: 'in_chk_slope', sheet: 'Inspection', stage: 'Checker <200', name: 'Checker <200 CCT slope (* 86400)', basis: 'formula', val: 0.00004 },
-    { id: 'in_chk_int', sheet: 'Inspection', stage: 'Checker <200', name: 'Checker <200 CCT intercept (* 86400)', basis: 'formula', val: 0.0014 },
-    { id: 'in_chk200_slope', sheet: 'Inspection', stage: 'Checker >=200', name: 'Checker >=200 CCT LN slope (* 86400)', basis: 'formula', val: 0.0043 },
-    { id: 'in_chk200_int', sheet: 'Inspection', stage: 'Checker >=200', name: 'Checker >=200 CCT LN intercept (* 86400)', basis: 'formula', val: -0.0108 },
+    { id: 'in_chk_slope', sheet: 'Inspection', stage: 'Checker', name: 'Checker slope (per CCT * 86400)', basis: 'formula', val: 0.00004 },
+    { id: 'in_chk_int', sheet: 'Inspection', stage: 'Checker', name: 'Checker intercept (* 86400)', basis: 'formula', val: 0.0014 },
     { id: 'in_fin_slope', sheet: 'Inspection', stage: 'Finishing', name: 'Finishing slope (per CCT * 86400)', basis: 'formula', val: 0.00002 },
     { id: 'in_fin_int', sheet: 'Inspection', stage: 'Finishing', name: 'Finishing intercept (* 86400)', basis: 'formula', val: 0.0025 },
   ],
@@ -385,8 +377,12 @@ const LEGACY_ASSEMBLY_PARAM_IDS = new Set([
   'as_set_t5',
   'as_set_t6',
   'as_set_t7',
+  'as_tap_non_cot',
   'as_tap_u99',
   'as_tap_o100',
+  'as_cot_ujung',
+  'as_cot_ins_h_base',
+  'as_cot_ins_h_mm',
   'as_cot_u99',
   'as_cot_o100',
   'as_mea_u99',
@@ -405,19 +401,44 @@ const LEGACY_ASSEMBLY_DEFAULT_VALS: Record<string, number> = {
   as_clm: 29.1129032,
 };
 
+const LEGACY_INSPECTION_PARAM_IDS = new Set([
+  'in_chk200_slope',
+  'in_chk200_int',
+]);
+
 /**
  * Migrasi otomatis parameter Assembly lama ke daftar parameter Assembly kronologis
- * (1 baris Setting Wires on Board + COT eksplisit + basis tunggal sec/unit(pcs))
+ * (1 baris Setting Wires on Board + COT eksplisit + basis tunggal sec/unit(pcs)),
+ * menyelaraskan parameter Checker menjadi linear kontinyu (tanpa cabang LN >=200),
  * dan selalu mengurutkan blok Assembly secara kronologis dari awal sampai akhir.
  */
 export function upgradeAssemblyStdParams(params: StdDatabase['params']): StdDatabase['params'] {
   const defaultAssemblyList = DEFAULT_STD_DATABASE.params.filter((p) => p.sheet === 'Assembly');
+  const defaultById = new Map(DEFAULT_STD_DATABASE.params.map((p) => [p.id, p]));
   const savedById = new Map(params.map((p) => [p.id, p]));
 
-  // 1. Pertahankan seluruh parameter non-Assembly dalam urutan aslinya
-  const nonAssemblyParams = params.filter(
-    (p) => p.sheet !== 'Assembly' && !LEGACY_ASSEMBLY_PARAM_IDS.has(p.id)
-  );
+  // 1. Pertahankan seluruh parameter non-Assembly dalam urutan aslinya,
+  //    hapus parameter Checker LN lama (>=200) dan perbarui label in_chk_slope / in_chk_int
+  const nonAssemblyParams = params
+    .filter(
+      (p) =>
+        p.sheet !== 'Assembly' &&
+        !LEGACY_ASSEMBLY_PARAM_IDS.has(p.id) &&
+        !LEGACY_INSPECTION_PARAM_IDS.has(p.id)
+    )
+    .map((p) => {
+      if (p.id === 'in_chk_slope' || p.id === 'in_chk_int') {
+        const def = defaultById.get(p.id);
+        if (def) {
+          return {
+            ...p,
+            stage: def.stage,
+            name: def.name,
+          };
+        }
+      }
+      return p;
+    });
 
   // 2. Susun ulang seluruh parameter Assembly secara kronologis sesuai urutan kanonik
   const orderedAssemblyParams = defaultAssemblyList.map((def) => {
@@ -463,33 +484,3 @@ export function upgradeAssemblyStdParams(params: StdDatabase['params']): StdData
 
   return merged;
 }
-
-export const SAMPLE_KHR_PAYLOAD: AssyInputPayload = {
-  id: 'sample_khr55431',
-  createdAt: '2026-11-12T09:15:00.000Z',
-  updatedAt: '2026-11-17T11:00:00.000Z',
-  params: {
-    assyNo: 'KHR55431-00',
-    customer: 'SUMITOMO',
-    yearQty: 2280,
-    lot: 15,
-    masterCct: 313,
-    pfdAllowancePct: 15,
-    allowanceMode: 'by_process',
-  },
-  assemblyComponents: {
-    markerQty: 0,
-    spotTapeQty: 0,
-    namePlateQty: 1,
-    clipQty: 1,
-    clampQty: 0,
-  },
-  partList: [],
-  ppcsList: [],
-  assemblyCotList: [
-    ...Array.from({ length: 21 }, () => ({ type: 'C' as const, tl: 200 })),
-    ...Array.from({ length: 28 }, () => ({ type: 'T' as const, tl: 202.857143 })),
-    ...Array.from({ length: 2 }, () => ({ type: 'B' as const, tl: 100 })),
-  ],
-  terminalRatios: {},
-};

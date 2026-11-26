@@ -24,6 +24,7 @@ import { AssyRecord, NavTab } from '../types/umh';
 
 interface HomeViewProps {
   records: AssyRecord[];
+  totalAssyCount?: number;
   onStartWizard: () => void;
   onNavigate: (tab: NavTab) => void;
   onOpenDetail: (record: AssyRecord) => void;
@@ -56,10 +57,12 @@ function getActiveAllowSec(rec: AssyRecord, variant: 'reg' | 'smv'): number {
 
 export function HomeView({
   records,
+  totalAssyCount,
   onStartWizard,
   onNavigate,
   onOpenDetail,
 }: HomeViewProps) {
+  const displayTotalCount = Math.max(totalAssyCount ?? records.length, records.length);
   const latestRecord = records[0];
   const [groupMode, setGroupMode] = useState<TrendGroupMode>('by_assy');
   const [unitMode, setUnitMode] = useState<TrendUnitMode>('hour');
@@ -339,7 +342,7 @@ export function HomeView({
                 <p className="text-sm font-semibold mt-0.5">Base Cycle (0%) &amp; PFD Justified</p>
               </div>
               <span className="font-mono-num text-xs font-semibold text-white/95 bg-slate-950/60 backdrop-blur-md px-3 py-1.5 rounded-xl border border-white/15 shrink-0">
-                {records.length} Assy Tersimpan
+                {displayTotalCount} Assy Tersimpan
               </span>
             </div>
           </div>
@@ -358,8 +361,10 @@ export function HomeView({
             </h2>
             <p className="text-xs text-slate-500 mt-0.5">
               Perbandingan UMH REG, SMV, dan rata-rata kumulatif ·{' '}
-              <span className="font-mono-num font-semibold text-slate-700">{records.length}</span>{' '}
-              Assy
+              <span className="font-mono-num font-semibold text-slate-700">
+                {records.length}
+              </span>{' '}
+              Assy terbaru{displayTotalCount > records.length ? ` (dari ${displayTotalCount} total)` : ''}
             </p>
           </div>
 

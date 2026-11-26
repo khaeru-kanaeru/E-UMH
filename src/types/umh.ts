@@ -125,67 +125,13 @@ export interface StdParamItem {
   val: number;
 }
 
-export interface Matrix2D {
-  id: 'acMatrix' | 'saMatrix' | 'mcMatrix' | 'cotMatrix' | 'settingWireMatrix' | 'difficultyMatrix';
-  title: string;
-  rowLabel: string;
-  colLabel: string;
-  rowBrackets: { label: string; min: number }[];
-  colBrackets: string[];
-  values: number[][];
-}
-
-export interface ProcessLogicDisc {
-  format: 'UMH_PROCESS_DISC_V1';
-  processId: ProcessId;
-  processName: string;
-  jpName: string;
-  weight: number;
-  version: string;
-  description: string;
-  isEmptyTemplate?: boolean;
-  isCustomProcess?: boolean;
-  code: string;
-  updatedAt: string;
-}
-
-export interface DiscSubStepOutput {
-  stage: string;
-  name: string;
-  basis: string;
-  qty: number;
-  rate: number;
-  baseSec: number;
-}
-
-export interface DiscValidationCheck {
-  id: string;
-  label: string;
-  passed: boolean;
-  detail: string;
-}
-
-export interface DiscValidationResult {
-  valid: boolean;
-  checks: DiscValidationCheck[];
-  normalizedDisc?: ProcessLogicDisc;
-  dryRunSample?: {
-    baseSec: number;
-    summaryNote: string;
-    subSteps: DiscSubStepOutput[];
-    deltaVsCurrentSec: number | null;
-  };
-}
-
 export interface StdDatabase {
   params: StdParamItem[];
   acMatrix: number[][];
   saMatrix: number[][];
   mcMatrix: number[][];
   cotMatrix: number[][];
-  settingWireMatrix: number[][];
   difficultyMatrix: number[][];
-  processDiscs?: ProcessLogicDisc[];
 }
 
 export interface SubStepResult {
@@ -222,6 +168,7 @@ export interface LotMetrics {
 }
 
 export interface CalculationVariant {
+  rawTotalBaseSec?: number;
   totalBaseSec: number;
   totalAllowByProcessSec: number;
   totalAllowByFinalSec: number;
@@ -231,6 +178,7 @@ export interface CalculationVariant {
 
 export interface CalculationResult {
   lotMetrics: LotMetrics;
+  rawTotalBaseSec?: number;
   totalBaseSec: number;
   totalAllowByProcessSec: number;
   totalAllowByFinalSec: number;
@@ -246,6 +194,12 @@ export interface AssyInputPayload {
   id: string;
   createdAt: string;
   updatedAt: string;
+  createdByUid?: string;
+  createdByName?: string;
+  createdByEmail?: string;
+  updatedByUid?: string;
+  updatedByName?: string;
+  updatedByEmail?: string;
   params: AssyParams;
   assemblyComponents: AssemblyComponents;
   partList: PartListItem[];
@@ -312,8 +266,7 @@ export type RecycleBinItemType =
   | 'assy_record'
   | 'refresh_history'
   | 'auto_cut_item'
-  | 'feeder_item'
-  | 'process_disc';
+  | 'feeder_item';
 
 export type RecycleBinOriginalCollection =
   | 'assyRecords'
@@ -331,7 +284,12 @@ export interface RecycleBinItem {
   payload: Record<string, unknown>;
 }
 
-export type MasterChangeCategory = 'std_params' | 'std_matrices' | 'auto_cut' | 'feeder';
+export type MasterChangeCategory =
+  | 'std_params'
+  | 'std_matrices'
+  | 'auto_cut'
+  | 'feeder'
+  | 'assy_manual_edit';
 
 export type MasterChangeSource = 'manual_edit' | 'excel_upload' | 'reset_default';
 

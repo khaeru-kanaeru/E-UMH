@@ -1,17 +1,11 @@
 import {
   upgradeDifficultyMatrix,
   upgradeLegacyCotMatrix,
-  upgradeSettingWireMatrix,
 } from '../data/cotMasterV2';
-import {
-  DEFAULT_PROCESS_DISCS,
-  upgradeBuiltinProcessDiscs,
-} from '../data/defaultProcessDiscs';
 import {
   DEFAULT_AUTO_CUT_LIST,
   DEFAULT_FEEDER_LIST,
   DEFAULT_STD_DATABASE,
-  SAMPLE_KHR_PAYLOAD,
   upgradeAssemblyStdParams,
 } from '../data/defaultStdDb';
 import { calculateUmh } from '../engine/umhCalculator';
@@ -96,40 +90,29 @@ export function loadStdDatabase(): StdDatabase {
   try {
     const raw = localStorage.getItem(KEY_STD_DB);
     if (!raw) {
-      return {
-        ...structuredClone(DEFAULT_STD_DATABASE),
-        processDiscs: structuredClone(DEFAULT_PROCESS_DISCS),
-      };
+      return structuredClone(DEFAULT_STD_DATABASE);
     }
-    const saved = JSON.parse(raw) as StdDatabase;
+    const saved = JSON.parse(raw) as Partial<StdDatabase>;
     if (saved && Array.isArray(saved.params)) {
-      if (!saved.acMatrix) saved.acMatrix = structuredClone(DEFAULT_STD_DATABASE.acMatrix);
-      if (!saved.saMatrix) saved.saMatrix = structuredClone(DEFAULT_STD_DATABASE.saMatrix);
-      if (!saved.mcMatrix) saved.mcMatrix = structuredClone(DEFAULT_STD_DATABASE.mcMatrix);
-      saved.cotMatrix = upgradeLegacyCotMatrix(saved.cotMatrix);
-      saved.settingWireMatrix = upgradeSettingWireMatrix(saved.settingWireMatrix);
-      saved.difficultyMatrix = upgradeDifficultyMatrix(saved.difficultyMatrix);
-      saved.params = upgradeAssemblyStdParams(saved.params);
-      if (!Array.isArray(saved.processDiscs) || saved.processDiscs.length === 0) {
-        saved.processDiscs = structuredClone(DEFAULT_PROCESS_DISCS);
-      } else {
-        DEFAULT_PROCESS_DISCS.forEach((dd) => {
-          if (!saved.processDiscs!.find((sd) => sd.processId === dd.processId)) {
-            saved.processDiscs!.push(structuredClone(dd));
-          }
-        });
-        saved.processDiscs = upgradeBuiltinProcessDiscs(saved.processDiscs);
-        saved.processDiscs.sort((a, b) => a.processId - b.processId);
-      }
-      return saved;
+      return {
+        params: upgradeAssemblyStdParams(saved.params),
+        acMatrix: Array.isArray(saved.acMatrix)
+          ? saved.acMatrix
+          : structuredClone(DEFAULT_STD_DATABASE.acMatrix),
+        saMatrix: Array.isArray(saved.saMatrix)
+          ? saved.saMatrix
+          : structuredClone(DEFAULT_STD_DATABASE.saMatrix),
+        mcMatrix: Array.isArray(saved.mcMatrix)
+          ? saved.mcMatrix
+          : structuredClone(DEFAULT_STD_DATABASE.mcMatrix),
+        cotMatrix: upgradeLegacyCotMatrix(saved.cotMatrix),
+        difficultyMatrix: upgradeDifficultyMatrix(saved.difficultyMatrix),
+      };
     }
   } catch {
     // ignore parse failure and return default
   }
-  return {
-    ...structuredClone(DEFAULT_STD_DATABASE),
-    processDiscs: structuredClone(DEFAULT_PROCESS_DISCS),
-  };
+  return structuredClone(DEFAULT_STD_DATABASE);
 }
 
 export function saveStdDatabase(db: StdDatabase): void {
@@ -137,10 +120,7 @@ export function saveStdDatabase(db: StdDatabase): void {
 }
 
 export function resetStdDatabase(): StdDatabase {
-  const fresh: StdDatabase = {
-    ...structuredClone(DEFAULT_STD_DATABASE),
-    processDiscs: structuredClone(DEFAULT_PROCESS_DISCS),
-  };
+  const fresh: StdDatabase = structuredClone(DEFAULT_STD_DATABASE);
   saveStdDatabase(fresh);
   return fresh;
 }
@@ -187,7 +167,11 @@ export function loadAssyRecords(
     if (raw) {
       const parsed = JSON.parse(raw) as (AssyInputPayload & { calculation?: AssyRecord['calculation'] })[];
       if (Array.isArray(parsed)) {
-        return parsed.map((p) => {
+        const filtered = parsed.filter((p) => p && p.id !== 'sample_khr55431');
+        if (filtered.length !== parsed.length) {
+          saveAssyPayloads(filtered);
+        }
+        return filtered.map((p) => {
           if (p.calculation && Array.isArray(p.calculation.processes) && p.calculation.smv) {
             return p as AssyRecord;
           }
@@ -199,16 +183,10 @@ export function loadAssyRecords(
       }
     }
   } catch {
-    // fallback to initial sample
+    // fallback to empty records list
   }
 
-  const initialPayloads = [SAMPLE_KHR_PAYLOAD];
-  const initialRecords: AssyRecord[] = initialPayloads.map((p) => ({
-    ...p,
-    calculation: calculateUmh(p, stdDb, autoCutList, feederList),
-  }));
-  saveAssyPayloads(initialRecords);
-  return initialRecords;
+  return [];
 }
 
 export function saveAssyPayloads(
@@ -218,6 +196,12 @@ export function saveAssyPayloads(
     id: p.id,
     createdAt: p.createdAt,
     updatedAt: p.updatedAt,
+    ...(p.createdByUid ? { createdByUid: p.createdByUid } : {}),
+    ...(p.createdByName ? { createdByName: p.createdByName } : {}),
+    ...(p.createdByEmail ? { createdByEmail: p.createdByEmail } : {}),
+    ...(p.updatedByUid ? { updatedByUid: p.updatedByUid } : {}),
+    ...(p.updatedByName ? { updatedByName: p.updatedByName } : {}),
+    ...(p.updatedByEmail ? { updatedByEmail: p.updatedByEmail } : {}),
     params: p.params,
     assemblyComponents: p.assemblyComponents,
     partList: p.partList,
@@ -234,7 +218,10 @@ export function loadRecycleBin(): RecycleBinItem[] {
     const raw = localStorage.getItem(KEY_RECYCLE_BIN);
     if (!raw) return [];
     const parsed = JSON.parse(raw) as RecycleBinItem[];
-    if (Array.isArray(parsed)) return parsed;
+    if (Array.isArray(parsed)) {
+      const validTypes = new Set(['assy_record', 'refresh_history', 'auto_cut_item', 'feeder_item']);
+      return parsed.filter((item) => item && validTypes.has(item.itemType));
+    }
   } catch {
     // ignore parse failure
   }

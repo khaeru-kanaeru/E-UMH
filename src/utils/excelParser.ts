@@ -1591,7 +1591,7 @@ function enrichPpcsRowByMap(
 
   if (!isRealCircuit) return null;
 
-  // Ensure assyNo is populated so discEngine's ppcsCount (= ppcs.filter(r => r.assyNo !== '').length) matches exact circuit count
+  // Ensure assyNo is populated so umhCalculator's ppcsCount (= ppcs.filter(r => r.assyNo !== '').length) matches exact circuit count
   const assyNo = rawAssyNo || fallbackAssyNo || 'ASSY';
 
   const hasWireShieldFlag =
@@ -2954,7 +2954,7 @@ export function reEnrichPayloadWithLists<
 }
 
 /**
- * Download blank CSV template matching /public/assets/aistudio/template_umh_f54bc004.csv
+ * Download blank CSV template for UMH Part Master Data
  */
 export function downloadUmhTemplateCsv(): void {
   const csvContent = [

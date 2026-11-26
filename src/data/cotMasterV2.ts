@@ -12,89 +12,6 @@ export type CotDiaCode =
   | 'D32'
   | 'D36';
 
-export interface SettingWireCctTier {
-  code: string;
-  minCct: number;
-  maxCct: number | null;
-  label: string;
-  rate: number; // dtk/CCT
-}
-
-/**
- * MATRIX_SETTING_WIRE_CCT:
- * Matriks rate berjenjang untuk sub-step Setting Wires on Board berdasarkan jumlah CCT aktual PPCS.
- * Sweet spot berada pada 201–300 CCT (7.30 dtk/CCT) dan melandai di 301–601+ CCT.
- */
-export const MATRIX_SETTING_WIRE_CCT: SettingWireCctTier[] = [
-  { code: 'T1', minCct: 1, maxCct: 50, label: '1 – 50 CCT', rate: 4.25 },
-  { code: 'T2', minCct: 51, maxCct: 100, label: '51 – 100 CCT', rate: 5.80 },
-  { code: 'T3', minCct: 101, maxCct: 200, label: '101 – 200 CCT', rate: 6.85 },
-  { code: 'T4', minCct: 201, maxCct: 300, label: '201 – 300 CCT', rate: 7.30 },
-  { code: 'T5', minCct: 301, maxCct: 450, label: '301 – 450 CCT', rate: 6.40 },
-  { code: 'T6', minCct: 451, maxCct: 600, label: '451 – 600 CCT', rate: 5.45 },
-  { code: 'T7', minCct: 601, maxCct: null, label: '601+ CCT', rate: 4.70 },
-];
-
-export const STD_SETTING_WIRE_ROW_LABELS: string[] = [
-  'T1 (1 – 50 CCT)',
-  'T2 (51 – 100 CCT)',
-  'T3 (101 – 200 CCT)',
-  'T4 (201 – 300 CCT · Sweet Spot)',
-  'T5 (301 – 450 CCT)',
-  'T6 (451 – 600 CCT)',
-  'T7 (601+ CCT)',
-];
-
-export const STD_SETTING_WIRE_COL_LABELS: string[] = ['Rate Dasar (dtk / CCT)'];
-
-export const DEFAULT_SETTING_WIRE_MATRIX: number[][] = MATRIX_SETTING_WIRE_CCT.map((t) => [t.rate]);
-
-export function upgradeSettingWireMatrix(matrix?: number[][]): number[][] {
-  if (!Array.isArray(matrix) || matrix.length !== MATRIX_SETTING_WIRE_CCT.length) {
-    return structuredClone(DEFAULT_SETTING_WIRE_MATRIX);
-  }
-  return MATRIX_SETTING_WIRE_CCT.map((tier, idx) => {
-    const val = Number(matrix[idx]?.[0]);
-    return [Number.isFinite(val) && val >= 0 ? val : tier.rate];
-  });
-}
-
-export function settingWireMatrixToRates(matrix?: number[][]): number[] {
-  return upgradeSettingWireMatrix(matrix).map((row) => row[0]);
-}
-
-export function resolveSettingWireRate(
-  totalCctPpcs: number,
-  customRates?: number[]
-): { code: string; label: string; rate: number } {
-  const cct = Math.max(0, Math.floor(Number(totalCctPpcs) || 0));
-  if (cct <= 0) {
-    return { code: 'T0', label: '0 CCT', rate: 0 };
-  }
-
-  let matchedIdx = MATRIX_SETTING_WIRE_CCT.length - 1;
-  for (let i = 0; i < MATRIX_SETTING_WIRE_CCT.length; i++) {
-    const tier = MATRIX_SETTING_WIRE_CCT[i];
-    if (cct >= tier.minCct && (tier.maxCct === null || cct <= tier.maxCct)) {
-      matchedIdx = i;
-      break;
-    }
-  }
-
-  const tier = MATRIX_SETTING_WIRE_CCT[matchedIdx];
-  const customVal = customRates?.[matchedIdx];
-  const rate =
-    typeof customVal === 'number' && Number.isFinite(customVal) && customVal >= 0
-      ? customVal
-      : tier.rate;
-
-  return {
-    code: tier.code,
-    label: tier.label,
-    rate,
-  };
-}
-
 export interface CotMasterFactorV2 {
   dia: CotDiaCode;
   diaMm: number;
@@ -144,14 +61,6 @@ export const DEFAULT_COT_MATRIX: number[][] = MASTER_COT_V2_LIST.map((x) => [
   x.tSpot,
   x.tUjungBranch,
 ]);
-
-export const MASTER_COT_V2_MAP: Record<CotDiaCode, CotMasterFactorV2> = MASTER_COT_V2_LIST.reduce(
-  (acc, item) => {
-    acc[item.dia] = item;
-    return acc;
-  },
-  {} as Record<CotDiaCode, CotMasterFactorV2>
-);
 
 const VALID_DIA_CODES = new Set<string>(MASTER_COT_V2_LIST.map((x) => x.dia));
 
@@ -358,16 +267,12 @@ export interface CotTapingV2Summary {
   totalBaseUmhHr: number;
 }
 
-export function isCotV2Row(item: AssemblyCotItem): boolean {
-  return Boolean(item.tubeName || item.diaCode || item.tubeNo);
-}
-
 /**
  * Hitung detik taping COT per baris sesuai rumus Master_COT_V2 + kerja fisik pemasangan selang COT:
- * - Pre-COT  = ((3.5 + L*Pre_Full) + (3.5 + L*Pre_Half) + (MAX(1, FLOOR(L/150))*T_Spot)) / 3
+ * - Pre-COT  = ((3.5 + L*Pre_Full) + (3.5 + L*Pre_Half) + (3.5 + MAX(1, FLOOR(L/150))*T_Spot)) / 3
  * - Insert   = COT-B: (3.00 + 0.035*L) | H-COT: (5.00 + 0.065*L)
  * - Ujung    = T_Ujung_Branch
- * - Post-COT = ((3.5 + L*Post_Full) + (3.5 + L*Post_Half) + (MAX(0, FLOOR(L/150)-1)*T_Spot)) / 3
+ * - Post-COT = ((3.5 + L*Post_Full) + (3.5 + L*Post_Half) + (FLOOR(L/150) > 0 ? 3.5 + FLOOR(L/150)*T_Spot : 0)) / 3
  * - Total Taping = (T_pre + T_ujung + T_post) * Q
  */
 export interface CotCalcOptions {
@@ -470,30 +375,15 @@ export function calculateCotRowTapingV2(
     options.cotBPerMmSec >= 0
       ? options.cotBPerMmSec
       : 0.035;
-  const hCotBase =
-    typeof options?.hCotBaseSec === 'number' &&
-    Number.isFinite(options.hCotBaseSec) &&
-    options.hCotBaseSec >= 0
-      ? options.hCotBaseSec
-      : 5.0;
-  const hCotPerMm =
-    typeof options?.hCotPerMmSec === 'number' &&
-    Number.isFinite(options.hCotPerMmSec) &&
-    options.hCotPerMmSec >= 0
-      ? options.hCotPerMmSec
-      : 0.065;
-
-  const floorDiv150 = Math.floor(L / 150);
-
   // 1. Pre-COT (taping wire bundle sebelum masuk COT)
   const preFull = preBase + L * factor.preFull;
   const preHalf = preBase + L * factor.preHalf;
   const preSpotCount = Math.max(1, Math.floor(L / 150));
-  const preSpot = 3.5 + preSpotCount * factor.tSpot;
+  const preSpot = preBase + preSpotCount * factor.tSpot;
   const tPre = (preFull + preHalf + preSpot) / 3;
 
-  // 2. Pemasangan Selang COT (kerja fisik insertion/fitting terpisah: COT-B slit vs H-COT non-slit)
-  const tInsert = cotKind === 'H-COT' ? hCotBase + L * hCotPerMm : cotBBase + L * cotBPerMm;
+  // 2. Pemasangan Selang COT (semua COT & H-COT disetarakan Slit)
+  const tInsert = cotBBase + L * cotBPerMm;
 
   // 3. Tutup ujung multi-branch per diameter
   const tUjung = factor.tUjungBranch;
@@ -502,7 +392,7 @@ export function calculateCotRowTapingV2(
   const postFull = postBase + L * factor.postFull;
   const postHalf = postBase + L * factor.postHalf;
   const postSpotPoints = Math.floor(L / 150);
-  const postSpot = postSpotPoints > 0 ? (3.5 + postSpotPoints * factor.tSpot) : 0;
+  const postSpot = postSpotPoints > 0 ? postBase + postSpotPoints * factor.tSpot : 0;
   const tPost = (postFull + postHalf + postSpot) / 3;
 
   const secPerUnit = tPre + tUjung + tPost;

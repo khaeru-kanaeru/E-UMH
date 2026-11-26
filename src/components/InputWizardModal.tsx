@@ -1,33 +1,26 @@
-import { useEffect, useMemo, useReducer, useRef, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { useEnterKeyNavigation } from '../hooks/useEnterKeyNavigation';
 import {
   AlertCircle,
+  AlertTriangle,
   ArrowRight,
-  Check,
   CheckCircle2,
   Download,
   Eye,
   FileSpreadsheet,
   Loader2,
   Sliders,
-  Sparkles,
-  Star,
   UploadCloud,
   Wrench,
   X,
 } from 'lucide-react';
-import {
-  calculateCotTapingV2Summary,
-  DIFFICULTY_ROW_LABELS,
-  resolveDifficultyPercentage,
-} from '../data/cotMasterV2';
-import { SAMPLE_KHR_PAYLOAD } from '../data/defaultStdDb';
+import { calculateCotTapingV2Summary } from '../data/cotMasterV2';
 import {
   DEFAULT_LOT_SIZE,
   extractAutoCutCandidateTerminals,
-  getAllowanceModeLabel,
   parseWireSize,
 } from '../engine/umhCalculator';
+import { DuplicateAssyMatch } from '../services/firestoreService';
 import {
   AllowanceMode,
   AssemblyComponents,
@@ -84,45 +77,9 @@ interface InputWizardModalProps {
   autoCutList: AutoCutItem[];
   feederList: FeederItem[];
   cotMatrix?: number[][];
-  difficultyMatrix?: number[][];
+  onCheckDuplicateAssy?: (assyNo: string, excludeId?: string) => Promise<DuplicateAssyMatch | null>;
   onClose: () => void;
   onSaveAndCalculate: (payload: AssyInputPayload) => void;
-}
-
-interface AllowanceState {
-  mode: AllowanceMode | '';
-  percentageStr: string;
-}
-
-type AllowanceAction =
-  | { type: 'SET_MODE'; mode: AllowanceMode | '' }
-  | { type: 'SET_PERCENTAGE'; percentageStr: string }
-  | { type: 'HYDRATE'; mode: AllowanceMode | ''; percentageStr: string };
-
-function requiresAllowanceInput(mode: AllowanceMode | ''): boolean {
-  return mode === 'by_process' || mode === 'by_final';
-}
-
-function allowanceReducer(state: AllowanceState, action: AllowanceAction): AllowanceState {
-  switch (action.type) {
-    case 'SET_MODE':
-      return {
-        mode: action.mode,
-        percentageStr: requiresAllowanceInput(action.mode) ? state.percentageStr : '',
-      };
-    case 'SET_PERCENTAGE':
-      return {
-        ...state,
-        percentageStr: requiresAllowanceInput(state.mode) ? action.percentageStr : '',
-      };
-    case 'HYDRATE':
-      return {
-        mode: action.mode,
-        percentageStr: requiresAllowanceInput(action.mode) ? action.percentageStr : '',
-      };
-    default:
-      return state;
-  }
 }
 
 export function InputWizardModal({
@@ -130,7 +87,7 @@ export function InputWizardModal({
   autoCutList,
   feederList,
   cotMatrix,
-  difficultyMatrix,
+  onCheckDuplicateAssy,
   onClose,
   onSaveAndCalculate,
 }: InputWizardModalProps) {
@@ -146,33 +103,24 @@ export function InputWizardModal({
       ? String(initialPayload.params.lot)
       : String(DEFAULT_LOT_SIZE)
   );
-  const [difficultyRating, setDifficultyRating] = useState<number>(
+
+  // Preserve existing allowance/difficulty when editing; new Assy always starts at 0 / 'none'
+  // and is configured after calculation in the Preview modal.
+  const preservedAllowanceMode: AllowanceMode = initialPayload?.params.allowanceMode ?? 'none';
+  const preservedPfdAllowancePct: number =
+    preservedAllowanceMode === 'none' ? 0 : Math.max(0, initialPayload?.params.pfdAllowancePct ?? 0);
+  const preservedDifficultyRating: number =
     typeof initialPayload?.params.difficultyRating === 'number' &&
-      Number.isFinite(initialPayload.params.difficultyRating)
+    Number.isFinite(initialPayload.params.difficultyRating)
       ? Math.max(0, Math.min(5, Math.round(initialPayload.params.difficultyRating * 2) / 2))
-      : 0
-  );
-  const [hoverStar, setHoverStar] = useState<number | null>(null);
-  const difficultyPct = resolveDifficultyPercentage(difficultyRating, difficultyMatrix);
-  const previewStar = hoverStar !== null ? hoverStar : difficultyRating;
-  const [allowanceState, dispatchAllowance] = useReducer(allowanceReducer, undefined, () => {
-    const initialMode: AllowanceMode | '' = initialPayload?.params.allowanceMode ?? '';
-    return {
-      mode: initialMode,
-      percentageStr:
-        initialPayload && requiresAllowanceInput(initialMode)
-          ? String(initialPayload.params.pfdAllowancePct ?? '')
-          : '',
-    };
-  });
-  const allowanceMode = allowanceState.mode;
-  const pfdAllowanceStr = allowanceState.percentageStr;
-  const showAllowanceInput = requiresAllowanceInput(allowanceMode);
+      : 0;
 
   const [validationError, setValidationError] = useState<string | null>(null);
-  const [validationField, setValidationField] = useState<
-    'masterCct' | 'lot' | 'allowanceMode' | 'pfdAllowance' | null
-  >(null);
+  const [validationField, setValidationField] = useState<'masterCct' | 'lot' | null>(null);
+
+  const [duplicateMatch, setDuplicateMatch] = useState<DuplicateAssyMatch | null>(null);
+  const [isCheckingDuplicate, setIsCheckingDuplicate] = useState(false);
+  const [showCancelConfirm, setShowCancelConfirm] = useState(false);
 
   const [assemblyComponents, setAssemblyComponents] = useState<AssemblyComponents>(
     initialPayload?.assemblyComponents ?? {
@@ -211,8 +159,6 @@ export function InputWizardModal({
   const assyNoInputRef = useRef<HTMLInputElement>(null);
   const cctInputRef = useRef<HTMLInputElement>(null);
   const lotInputRef = useRef<HTMLInputElement>(null);
-  const modeSelectRef = useRef<HTMLSelectElement>(null);
-  const allowanceInputRef = useRef<HTMLInputElement>(null);
   const submitButtonRef = useRef<HTMLButtonElement>(null);
 
   const masterInputRef = useRef<HTMLInputElement>(null);
@@ -223,26 +169,106 @@ export function InputWizardModal({
 
   const parsedMasterCct = masterCctStr.trim() === '' ? 0 : Math.max(0, Number(masterCctStr) || 0);
   const parsedLot = lotStr.trim() === '' ? 0 : Math.max(0, Number(lotStr) || 0);
-  const parsedAllowancePct =
-    !showAllowanceInput || pfdAllowanceStr.trim() === ''
-      ? 0
-      : Math.max(0, Number(pfdAllowanceStr) || 0);
+
+  // Track unsaved edits for cancel confirmation on X / Batal
+  const isDirty = useMemo(() => {
+    const initAssy = initialPayload?.params.assyNo ?? '';
+    const initCust = initialPayload?.params.customer ?? '';
+    const initCct =
+      initialPayload && initialPayload.params.masterCct > 0
+        ? String(initialPayload.params.masterCct)
+        : '';
+    const initLot =
+      initialPayload?.params.lot && initialPayload.params.lot > 0
+        ? String(initialPayload.params.lot)
+        : String(DEFAULT_LOT_SIZE);
+    const initAsm = initialPayload?.assemblyComponents ?? {
+      markerQty: 0,
+      spotTapeQty: 0,
+      namePlateQty: 0,
+      clipQty: 0,
+      clampQty: 0,
+    };
+
+    return (
+      assyNo !== initAssy ||
+      customer !== initCust ||
+      masterCctStr !== initCct ||
+      lotStr !== initLot ||
+      partList.length !== (initialPayload?.partList.length ?? 0) ||
+      ppcsList.length !== (initialPayload?.ppcsList.length ?? 0) ||
+      assemblyCotList.length !== (initialPayload?.assemblyCotList.length ?? 0) ||
+      assemblyComponents.markerQty !== initAsm.markerQty ||
+      assemblyComponents.spotTapeQty !== initAsm.spotTapeQty ||
+      assemblyComponents.namePlateQty !== initAsm.namePlateQty ||
+      assemblyComponents.clipQty !== initAsm.clipQty ||
+      assemblyComponents.clampQty !== initAsm.clampQty
+    );
+  }, [
+    initialPayload,
+    assyNo,
+    customer,
+    masterCctStr,
+    lotStr,
+    partList.length,
+    ppcsList.length,
+    assemblyCotList.length,
+    assemblyComponents,
+  ]);
+
+  const handleRequestClose = () => {
+    if (isDirty) {
+      setShowCancelConfirm(true);
+    } else {
+      onClose();
+    }
+  };
+
+  // Debounced duplicate Assy Number detection across shared database
+  useEffect(() => {
+    if (!onCheckDuplicateAssy) return;
+    const trimmed = assyNo.trim();
+    if (trimmed.length < 2) {
+      setDuplicateMatch(null);
+      setIsCheckingDuplicate(false);
+      return;
+    }
+
+    let cancelled = false;
+    setIsCheckingDuplicate(true);
+    const timer = setTimeout(() => {
+      void onCheckDuplicateAssy(trimmed, initialPayload?.id)
+        .then((match) => {
+          if (!cancelled) {
+            setDuplicateMatch(match);
+            setIsCheckingDuplicate(false);
+          }
+        })
+        .catch(() => {
+          if (!cancelled) {
+            setDuplicateMatch(null);
+            setIsCheckingDuplicate(false);
+          }
+        });
+    }, 350);
+
+    return () => {
+      cancelled = true;
+      clearTimeout(timer);
+    };
+  }, [assyNo, initialPayload?.id, onCheckDuplicateAssy]);
 
   // Ref-backed Enter key navigation: cycles through visible inputs & visually manages focus
   const { activeFieldIndex, totalFields, focusField } = useEnterKeyNavigation(formContainerRef, {
     submitRef: submitButtonRef,
-    disabled: Boolean(previewTarget) || entryMode === 'choose',
+    disabled: Boolean(previewTarget) || showCancelConfirm || entryMode === 'choose',
   });
 
   // Auto-focus appropriate input field when entering template or manual workspace
   useEffect(() => {
     if (entryMode === 'choose') return;
     requestAnimationFrame(() => {
-      if (entryMode === 'template' && assyNo.trim() !== '' && parsedMasterCct > 0 && !allowanceMode) {
-        focusField(modeSelectRef.current);
-      } else {
-        focusField(assyNoInputRef.current);
-      }
+      focusField(assyNoInputRef.current);
     });
   }, [entryMode, focusField]);
 
@@ -432,14 +458,6 @@ export function InputWizardModal({
           : parsedLot > 0
           ? parsedLot
           : DEFAULT_LOT_SIZE;
-      const nextMode: AllowanceMode | '' =
-        parsed.params?.allowanceMode || allowanceMode;
-      const nextPfdStr =
-        nextMode === 'none'
-          ? ''
-          : parsed.params?.pfdAllowancePct !== undefined
-          ? String(parsed.params.pfdAllowancePct)
-          : pfdAllowanceStr;
 
       const hasMarkerFromSheet = Boolean(
         parsed.assemblyComponents?.markerQty && parsed.assemblyComponents.markerQty > 0
@@ -471,11 +489,6 @@ export function InputWizardModal({
       setCustomer(nextCustomer);
       if (nextMasterCct > 0) setMasterCctStr(String(nextMasterCct));
       setLotStr(String(nextLot));
-      dispatchAllowance({
-        type: 'HYDRATE',
-        mode: nextMode,
-        percentageStr: nextPfdStr,
-      });
 
       if (parsed.partList) setPartList(parsed.partList);
       if (parsed.ppcsList) setPpcsList(parsed.ppcsList);
@@ -487,47 +500,6 @@ export function InputWizardModal({
       // Automatically enter Template workspace when uploaded from the method chooser
       if (entryMode === 'choose') {
         setEntryMode('template');
-      }
-
-      // Auto-calculate only when complete template AND allowance mode + % are explicitly ready
-      const isAllowanceReady =
-        nextMode === 'none' ||
-        (nextMode !== '' && nextPfdStr.trim() !== '' && Number.isFinite(Number(nextPfdStr)));
-      const isCompleteTemplate =
-        (parsed.detectedFormat === 'full_template' ||
-          (nextPl.length > 0 && nextPpcs.length > 0 && nextCot.length > 0)) &&
-        nextMasterCct > 0 &&
-        isAllowanceReady;
-      const isFilledPartMasterOnly =
-        parsed.detectedFormat === 'part_master_only' &&
-        Boolean(nextAssyNo) &&
-        nextMasterCct > 0 &&
-        isAllowanceReady;
-
-      if (isCompleteTemplate || isFilledPartMasterOnly) {
-        const cleanAssy = nextAssyNo.trim() || `ASSY-${Date.now()}`;
-        const now = new Date().toISOString();
-        const finalParams: AssyParams = {
-          assyNo: cleanAssy,
-          customer: nextCustomer.trim() || (nextPl[0]?.customer ?? '-'),
-          masterCct: nextMasterCct,
-          lot: nextLot,
-          allowanceMode: nextMode as AllowanceMode,
-          pfdAllowancePct: nextMode === 'none' ? 0 : Math.max(0, Number(nextPfdStr) || 0),
-          difficultyRating,
-        };
-        onSaveAndCalculate({
-          id: initialPayload?.id ?? `assy_${Date.now()}`,
-          createdAt: initialPayload?.createdAt ?? now,
-          updatedAt: now,
-          params: finalParams,
-          assemblyComponents: nextAsm,
-          partList: nextPl,
-          ppcsList: nextPpcs,
-          assemblyCotList: nextCot,
-          terminalRatios: nextRatios,
-        });
-        return;
       }
 
       const nextParamsExtractedCct = nextMasterCct;
@@ -585,9 +557,7 @@ export function InputWizardModal({
         asmDetected,
       });
       setStatusMessage(
-        !isAllowanceReady
-          ? 'Template berhasil dimuat & seluruh komponen assembly tervalidasi. Pilih Metode Distribusi Allowance untuk kalkulasi.'
-          : null
+        'Template berhasil dimuat & komponen tervalidasi. Klik "Hitung & Preview Hasil" untuk melihat hasil dan menetapkan Allowance / Tingkat Kesulitan.'
       );
     } catch {
       setStatusMessage(
@@ -696,28 +666,6 @@ export function InputWizardModal({
     }
   };
 
-  const handleLoadSampleKhr = () => {
-    setAssyNo(SAMPLE_KHR_PAYLOAD.params.assyNo);
-    setCustomer(SAMPLE_KHR_PAYLOAD.params.customer);
-    setMasterCctStr(String(SAMPLE_KHR_PAYLOAD.params.masterCct));
-    setLotStr(String(SAMPLE_KHR_PAYLOAD.params.lot ?? DEFAULT_LOT_SIZE));
-    setDifficultyRating(SAMPLE_KHR_PAYLOAD.params.difficultyRating ?? 0);
-    dispatchAllowance({
-      type: 'HYDRATE',
-      mode: SAMPLE_KHR_PAYLOAD.params.allowanceMode,
-      percentageStr: String(SAMPLE_KHR_PAYLOAD.params.pfdAllowancePct),
-    });
-    setAssemblyComponents({ ...SAMPLE_KHR_PAYLOAD.assemblyComponents });
-    setPartList([...SAMPLE_KHR_PAYLOAD.partList]);
-    setPpcsList([...SAMPLE_KHR_PAYLOAD.ppcsList]);
-    setAssemblyCotList([...SAMPLE_KHR_PAYLOAD.assemblyCotList]);
-    setMarkerList([]);
-    setTerminalRatios({ ...SAMPLE_KHR_PAYLOAD.terminalRatios });
-    setEntryMode('manual');
-    clearValidation();
-    setStatusMessage('Parameter & Assembly COT KHR55431-00 dimuat.');
-  };
-
   const handleApplyAllRatio = () => {
     const clamped = Math.max(0, Math.min(100, applyAllRatio));
     const next: TerminalRatios = { ...terminalRatios };
@@ -745,27 +693,6 @@ export function InputWizardModal({
       return;
     }
 
-    if (!allowanceMode) {
-      setValidationError('Pilih Metode Distribusi Allowance terlebih dahulu (0, 1, atau 2).');
-      setValidationField('allowanceMode');
-      focusField(modeSelectRef.current);
-      return;
-    }
-
-    if (
-      showAllowanceInput &&
-      (pfdAllowanceStr.trim() === '' ||
-        !Number.isFinite(Number(pfdAllowanceStr)) ||
-        Number(pfdAllowanceStr) < 0)
-    ) {
-      setValidationError(
-        'Masukkan angka % Allowance PFD terlebih dahulu untuk metode yang dipilih.'
-      );
-      setValidationField('pfdAllowance');
-      focusField(allowanceInputRef.current);
-      return;
-    }
-
     const cleanAssy = assyNo.trim() || `ASSY-${Date.now()}`;
     const now = new Date().toISOString();
     const finalRatios: TerminalRatios = { ...terminalRatios };
@@ -778,15 +705,21 @@ export function InputWizardModal({
       customer: customer.trim() || (partList[0]?.customer ?? '-'),
       masterCct: Math.round(parsedMasterCct),
       lot: Math.max(1, Math.round(parsedLot)),
-      allowanceMode,
-      pfdAllowancePct: allowanceMode === 'none' ? 0 : parsedAllowancePct,
-      difficultyRating,
+      allowanceMode: preservedAllowanceMode,
+      pfdAllowancePct: preservedPfdAllowancePct,
+      difficultyRating: preservedDifficultyRating,
     };
 
     onSaveAndCalculate({
       id: initialPayload?.id ?? `assy_${Date.now()}`,
       createdAt: initialPayload?.createdAt ?? now,
       updatedAt: now,
+      createdByUid: initialPayload?.createdByUid,
+      createdByName: initialPayload?.createdByName,
+      createdByEmail: initialPayload?.createdByEmail,
+      updatedByUid: initialPayload?.updatedByUid,
+      updatedByName: initialPayload?.updatedByName,
+      updatedByEmail: initialPayload?.updatedByEmail,
       params: finalParams,
       assemblyComponents,
       partList,
@@ -798,20 +731,55 @@ export function InputWizardModal({
 
   const renderParameterInputs = () => (
     <div className="space-y-3.5">
-      <label className="block space-y-1">
-        <span className="text-xs font-semibold text-slate-700">Assy Number</span>
-        <input
-          ref={assyNoInputRef}
-          type="text"
-          value={assyNo}
-          onChange={(e) => {
-            setAssyNo(e.target.value);
-            clearValidation();
-          }}
-          placeholder="Contoh: YA00058702-014"
-          className="w-full px-3 py-2 text-sm font-mono-num bg-slate-50 border border-slate-200 rounded-lg focus:bg-white focus:outline-none focus:ring-2 focus:ring-[#1E3A8A]/20 focus:border-[#1E3A8A]"
-        />
-      </label>
+      <div className="space-y-1.5">
+        <label className="block space-y-1">
+          <div className="flex items-center justify-between gap-2">
+            <span className="text-xs font-semibold text-slate-700">Assy Number</span>
+            {isCheckingDuplicate && (
+              <span className="inline-flex items-center gap-1 text-[11px] text-slate-400">
+                <Loader2 className="w-3 h-3 animate-spin" />
+                <span>Cek duplikat...</span>
+              </span>
+            )}
+          </div>
+          <input
+            ref={assyNoInputRef}
+            type="text"
+            value={assyNo}
+            onChange={(e) => {
+              setAssyNo(e.target.value);
+              clearValidation();
+            }}
+            placeholder="Contoh: YA00058702-014"
+            className={`w-full px-3 py-2 text-sm font-mono-num bg-slate-50 border rounded-lg focus:bg-white focus:outline-none focus:ring-2 ${
+              duplicateMatch
+                ? 'border-amber-400 focus:border-amber-500 focus:ring-amber-500/20'
+                : 'border-slate-200 focus:border-[#1E3A8A] focus:ring-[#1E3A8A]/20'
+            }`}
+          />
+        </label>
+
+        {duplicateMatch && (
+          <div className="rounded-xl border border-amber-300 bg-amber-50 px-3 py-2.5 text-xs text-amber-950 flex items-start gap-2">
+            <AlertTriangle className="w-4 h-4 text-amber-600 shrink-0 mt-0.5" />
+            <div className="min-w-0 leading-relaxed">
+              <p className="font-bold text-amber-900">
+                Assy Duplikat Terdeteksi ({duplicateMatch.assyNo})
+              </p>
+              <p className="text-[11px] text-amber-800 mt-0.5">
+                Sudah pernah diinput untuk Customer{' '}
+                <strong>{duplicateMatch.customer || '-'}</strong>
+                {duplicateMatch.createdByName ? (
+                  <>
+                    {' '}oleh <strong>{duplicateMatch.createdByName}</strong>
+                  </>
+                ) : null}
+                . Periksa kembali nomor Assy atau lanjutkan jika memang membuat entri baru.
+              </p>
+            </div>
+          </div>
+        )}
+      </div>
 
       <label className="block space-y-1">
         <span className="text-xs font-semibold text-slate-700">
@@ -874,172 +842,10 @@ export function InputWizardModal({
         </label>
       </div>
 
-      <label className="block space-y-1">
-        <span className="text-xs font-semibold text-slate-700">
-          Metode Distribusi Allowance <span className="text-red-500">*</span>
-        </span>
-        <select
-          ref={modeSelectRef}
-          required
-          aria-required="true"
-          value={allowanceMode}
-          onChange={(e) => {
-            const next = e.target.value as AllowanceMode | '';
-            const wasHidden = !showAllowanceInput;
-            dispatchAllowance({ type: 'SET_MODE', mode: next });
-            if (wasHidden && requiresAllowanceInput(next)) {
-              requestAnimationFrame(() => {
-                focusField(allowanceInputRef.current);
-              });
-            }
-            clearValidation();
-          }}
-          className={`w-full px-3 py-2 text-sm bg-slate-50 border rounded-lg focus:bg-white focus:outline-none focus:ring-2 transition-colors ${
-            validationField === 'allowanceMode'
-              ? 'border-red-400 focus:border-red-500 focus:ring-red-500/20'
-              : 'border-slate-200 focus:border-[#1E3A8A] focus:ring-[#1E3A8A]/25'
-          } ${allowanceMode === '' ? 'text-slate-500' : 'text-slate-900 font-medium'}`}
-        >
-          <option value="" disabled>
-            -- Pilih Metode Distribusi (Wajib) --
-          </option>
-          <option value="none">0. Tanpa Allowance (Base / 0%)</option>
-          <option value="by_process">1. By Proses (+% Tiap Proses → Substep)</option>
-          <option value="by_final">2. By Hasil Akhir (Distribusi Kesulitan → Substep)</option>
-        </select>
-      </label>
-
-      {showAllowanceInput && (
-        <label className="block space-y-1">
-          <span className="text-xs font-semibold text-slate-700">
-            % Allowance PFD <span className="text-red-500">*</span>
-          </span>
-          <input
-            ref={allowanceInputRef}
-            type="number"
-            step="0.5"
-            min="0"
-            max="100"
-            required
-            aria-required="true"
-            value={pfdAllowanceStr}
-            onChange={(e) => {
-              dispatchAllowance({
-                type: 'SET_PERCENTAGE',
-                percentageStr: e.target.value,
-              });
-              clearValidation();
-            }}
-            placeholder="Isi persentase allowance (cth: 15)"
-            className={`w-full px-3 py-2 text-sm font-mono-num bg-slate-50 border rounded-lg focus:bg-white focus:outline-none focus:ring-2 transition-colors ${
-              validationField === 'pfdAllowance'
-                ? 'border-red-400 focus:border-red-500 focus:ring-red-500/20'
-                : 'border-slate-200 focus:border-[#1E3A8A] focus:ring-[#1E3A8A]/25'
-            }`}
-          />
-        </label>
-      )}
-
-      {/* Rating Tingkat Kesulitan Manual (0.0 – 5.0 ★, kelipatan 0.5) */}
-      <div className="rounded-xl border border-slate-200 bg-slate-50/70 p-3 space-y-2.5">
-        <div className="flex items-center justify-between gap-2">
-          <span className="text-xs font-semibold text-slate-700">
-            Tingkat Kesulitan Manual (0.0–5.0 ★)
-          </span>
-          <span
-            className={`inline-flex items-center gap-1 px-2 py-0.5 rounded-md border font-mono-num text-[11px] font-semibold whitespace-nowrap ${
-              difficultyRating > 0
-                ? 'bg-amber-50 border-amber-200 text-amber-800'
-                : 'bg-white border-slate-200 text-slate-600'
-            }`}
-          >
-            {difficultyRating.toFixed(1)} ★ (+{difficultyPct.toFixed(2)}%)
-          </span>
-        </div>
-
-        <div className="flex items-center justify-between gap-2">
-          <div
-            className="inline-flex items-center gap-1"
-            onMouseLeave={() => setHoverStar(null)}
-            role="group"
-            aria-label="Pilih rating bintang kesulitan (kelipatan 0.5)"
-          >
-            {[1, 2, 3, 4, 5].map((starNum) => {
-              const halfVal = starNum - 0.5;
-              const isFull = previewStar >= starNum;
-              const isHalf = !isFull && previewStar >= halfVal;
-              return (
-                <div key={starNum} className="relative w-6 h-6 shrink-0">
-                  <Star
-                    className={`w-6 h-6 transition-colors ${
-                      isFull
-                        ? 'fill-amber-400 text-amber-500'
-                        : 'fill-slate-100 text-slate-300'
-                    }`}
-                  />
-                  {isHalf && (
-                    <div className="absolute inset-y-0 left-0 w-1/2 overflow-hidden pointer-events-none">
-                      <Star className="w-6 h-6 fill-amber-400 text-amber-500" />
-                    </div>
-                  )}
-                  <button
-                    type="button"
-                    aria-label={`${halfVal.toFixed(1)} Bintang`}
-                    title={`${halfVal.toFixed(1)} ★ (+${resolveDifficultyPercentage(
-                      halfVal,
-                      difficultyMatrix
-                    ).toFixed(2)}%)`}
-                    onMouseEnter={() => setHoverStar(halfVal)}
-                    onClick={() =>
-                      setDifficultyRating((prev) => (prev === halfVal ? 0 : halfVal))
-                    }
-                    className="absolute inset-y-0 left-0 w-1/2 cursor-pointer focus:outline-none"
-                  />
-                  <button
-                    type="button"
-                    aria-label={`${starNum.toFixed(1)} Bintang`}
-                    title={`${starNum.toFixed(1)} ★ (+${resolveDifficultyPercentage(
-                      starNum,
-                      difficultyMatrix
-                    ).toFixed(2)}%)`}
-                    onMouseEnter={() => setHoverStar(starNum)}
-                    onClick={() =>
-                      setDifficultyRating((prev) => (prev === starNum ? 0 : starNum))
-                    }
-                    className="absolute inset-y-0 right-0 w-1/2 cursor-pointer focus:outline-none"
-                  />
-                </div>
-              );
-            })}
-          </div>
-
-          {difficultyRating > 0 && (
-            <button
-              type="button"
-              onClick={() => setDifficultyRating(0)}
-              className="text-[11px] font-semibold text-slate-500 hover:text-slate-800 underline cursor-pointer whitespace-nowrap"
-            >
-              Reset 0.0
-            </button>
-          )}
-        </div>
-
-        <select
-          aria-label="Pilih jenjang tingkat kesulitan"
-          value={difficultyRating}
-          onChange={(e) => setDifficultyRating(Number(e.target.value) || 0)}
-          className="w-full px-2.5 py-1.5 text-xs bg-white border border-slate-200 rounded-lg text-slate-800 font-medium focus:outline-none focus:ring-2 focus:ring-[#1E3A8A]/20 focus:border-[#1E3A8A]"
-        >
-          {DIFFICULTY_ROW_LABELS.map((lbl, idx) => {
-            const starVal = idx * 0.5;
-            const pct = resolveDifficultyPercentage(starVal, difficultyMatrix);
-            return (
-              <option key={starVal} value={starVal}>
-                {lbl} — +{pct.toFixed(2)}%
-              </option>
-            );
-          })}
-        </select>
+      <div className="rounded-xl border border-slate-200 bg-slate-50/80 px-3.5 py-2.5 text-[11px] text-slate-600 leading-relaxed">
+        <strong className="text-slate-800">Penetapan Allowance &amp; Tingkat Kesulitan:</strong>{' '}
+        Dilakukan setelah kalkulasi pada tampilan <strong>Preview Hasil</strong> (bersamaan dengan
+        tombol Simpan / Konfirmasi Assy).
       </div>
     </div>
   );
@@ -1161,22 +967,12 @@ export function InputWizardModal({
               </div>
             )}
 
-            {entryMode === 'manual' && (
-              <button
-                type="button"
-                onClick={handleLoadSampleKhr}
-                className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-slate-100 text-[#1E3A8A] border border-slate-200 text-xs font-semibold hover:bg-slate-200/70 transition-colors cursor-pointer whitespace-nowrap"
-              >
-                <Sparkles className="w-3.5 h-3.5" />
-                <span>Sample KHR</span>
-              </button>
-            )}
-
             <button
               type="button"
-              onClick={onClose}
+              onClick={handleRequestClose}
               className="p-2 rounded-lg text-slate-500 hover:bg-slate-100 hover:text-slate-900 transition-colors cursor-pointer"
-              aria-label="Tutup Form Input"
+              aria-label="Batalkan Input"
+              title="Batalkan Operasi"
             >
               <X className="w-4 h-4" />
             </button>
@@ -1553,14 +1349,6 @@ export function InputWizardModal({
                       <span>Buka Mode Input Manual</span>
                       <ArrowRight className="w-3.5 h-3.5" />
                     </button>
-                    <button
-                      type="button"
-                      onClick={handleLoadSampleKhr}
-                      className="w-full inline-flex items-center justify-center gap-1.5 px-3 py-1.5 rounded-lg text-[#1E3A8A] text-xs font-semibold hover:bg-blue-50 transition-colors cursor-pointer"
-                    >
-                      <Sparkles className="w-3.5 h-3.5" />
-                      <span>Muat Sample Data KHR55431-00</span>
-                    </button>
                   </div>
                 </section>
               </div>
@@ -1577,10 +1365,10 @@ export function InputWizardModal({
                       <div className="pb-3 border-b border-slate-100 flex items-start justify-between gap-2">
                         <div>
                           <h3 className="text-sm font-bold text-slate-900">
-                            01. Konfirmasi Parameter &amp; Allowance
+                            01. Konfirmasi Identitas &amp; Parameter Assy
                           </h3>
                           <p className="text-xs text-slate-500 mt-0.5">
-                            Terisi otomatis dari header PART LIST; pilih metode distribusi allowance.
+                            Terisi otomatis dari header PART LIST; Allowance &amp; Kesulitan diatur setelah kalkulasi.
                           </p>
                         </div>
                         <span
@@ -1856,7 +1644,7 @@ export function InputWizardModal({
                             01. Parameter &amp; Identitas Assy
                           </h3>
                           <p className="text-xs text-slate-500 mt-0.5">
-                            Identitas Assy, jumlah CCT, LOT, dan metode allowance.
+                            Identitas Assy, jumlah CCT, dan LOT.
                           </p>
                         </div>
                         <span
@@ -2308,7 +2096,7 @@ export function InputWizardModal({
               </p>
               <button
                 type="button"
-                onClick={onClose}
+                onClick={handleRequestClose}
                 className="px-4 py-2 rounded-lg bg-white border border-slate-200 text-xs font-semibold text-slate-700 hover:bg-slate-50 cursor-pointer whitespace-nowrap"
               >
                 Batal
@@ -2316,21 +2104,22 @@ export function InputWizardModal({
             </>
           ) : (
             <>
-              <div className="text-xs text-slate-500 font-mono-num">
-                {assyNo || 'Assy belum diisi'} · CCT {parsedMasterCct || '-'} · LOT {parsedLot || '-'} ·{' '}
-                {allowanceMode ? getAllowanceModeLabel(allowanceMode, 'numbered') : 'Metode belum dipilih'}
-                {allowanceMode && allowanceMode !== 'none'
-                  ? ` (${pfdAllowanceStr.trim() === '' ? '-' : `${parsedAllowancePct}%`})`
-                  : ''}
-                {difficultyRating > 0
-                  ? ` · Kesulitan: ${difficultyRating.toFixed(1)} ★ (+${difficultyPct.toFixed(2)}%)`
-                  : ''}
+              <div className="flex flex-wrap items-center gap-2 text-xs text-slate-500 font-mono-num">
+                <span>
+                  {assyNo || 'Assy belum diisi'} · CCT {parsedMasterCct || '-'} · LOT {parsedLot || '-'}
+                </span>
+                {duplicateMatch && (
+                  <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-md bg-amber-100 text-amber-900 font-sans font-semibold text-[11px]">
+                    <AlertTriangle className="w-3 h-3 text-amber-700" />
+                    <span>Duplikat</span>
+                  </span>
+                )}
               </div>
 
               <div className="flex items-center gap-2.5">
                 <button
                   type="button"
-                  onClick={onClose}
+                  onClick={handleRequestClose}
                   className="px-4 py-2 rounded-lg bg-white border border-slate-200 text-xs font-semibold text-slate-700 hover:bg-slate-50 cursor-pointer whitespace-nowrap"
                 >
                   Batal
@@ -2339,10 +2128,10 @@ export function InputWizardModal({
                   ref={submitButtonRef}
                   type="button"
                   onClick={handleSubmit}
-                  className="inline-flex items-center gap-1.5 px-5 py-2 rounded-lg bg-[#047857] text-white text-xs font-semibold hover:bg-[#065F46] focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-[#047857] cursor-pointer whitespace-nowrap transition-shadow"
+                  className="inline-flex items-center gap-1.5 px-5 py-2 rounded-lg bg-[#1E3A8A] text-white text-xs font-semibold hover:bg-[#172E6E] focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-[#1E3A8A] cursor-pointer whitespace-nowrap transition-shadow shadow-xs"
                 >
-                  <Check className="w-4 h-4" />
-                  <span>Kalkulasi &amp; Simpan Hasil</span>
+                  <span>Hitung &amp; Preview Hasil</span>
+                  <ArrowRight className="w-4 h-4" />
                 </button>
               </div>
             </>
@@ -2664,6 +2453,43 @@ export function InputWizardModal({
                     </table>
                   )
                 )}
+              </div>
+            </div>
+          </div>
+        )}
+        {/* Cancel Confirmation Dialog */}
+        {showCancelConfirm && (
+          <div className="fixed inset-0 z-[75] flex items-center justify-center bg-slate-950/55 backdrop-blur-xs p-4">
+            <div className="w-full max-w-md rounded-2xl bg-white border border-slate-200 shadow-2xl overflow-hidden">
+              <div className="px-5 py-4 border-b border-slate-200 flex items-center gap-3">
+                <div className="w-9 h-9 rounded-xl bg-amber-100 text-amber-700 flex items-center justify-center shrink-0">
+                  <AlertTriangle className="w-4 h-4" />
+                </div>
+                <div>
+                  <h4 className="text-sm font-bold text-slate-900">Batalkan Input Assy?</h4>
+                  <p className="text-xs text-slate-500 mt-0.5">
+                    Data atau perubahan yang sedang diinput belum disimpan.
+                  </p>
+                </div>
+              </div>
+              <div className="px-5 py-3.5 bg-slate-50 flex items-center justify-end gap-2">
+                <button
+                  type="button"
+                  onClick={() => setShowCancelConfirm(false)}
+                  className="px-4 py-2 rounded-xl bg-white border border-slate-200 text-xs font-semibold text-slate-700 hover:bg-slate-100 cursor-pointer"
+                >
+                  Kembali ke Form
+                </button>
+                <button
+                  type="button"
+                  onClick={() => {
+                    setShowCancelConfirm(false);
+                    onClose();
+                  }}
+                  className="px-4 py-2 rounded-xl bg-red-600 text-white text-xs font-semibold hover:bg-red-700 cursor-pointer"
+                >
+                  Ya, Batalkan
+                </button>
               </div>
             </div>
           </div>

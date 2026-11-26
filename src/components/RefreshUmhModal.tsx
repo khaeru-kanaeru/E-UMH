@@ -43,6 +43,7 @@ interface RefreshUmhModalProps {
   stdDb: StdDatabase;
   autoCutList: AutoCutItem[];
   feederList: FeederItem[];
+  lockedPicName?: string;
   onCompleteRefresh: (
     updatedMap: Map<string, AssyRecord>,
     historyEntry: RefreshHistoryEntry
@@ -57,6 +58,7 @@ export function RefreshUmhModal({
   stdDb,
   autoCutList,
   feederList,
+  lockedPicName,
   onCompleteRefresh,
   onPrintPdf,
   onCancelAll,
@@ -65,7 +67,10 @@ export function RefreshUmhModal({
   const [stage, setStage] = useState<RefreshStage>('select');
   const [searchQuery, setSearchQuery] = useState('');
   const [selectedIds, setSelectedIds] = useState<Set<string>>(() => new Set());
-  const [responsibleName, setResponsibleName] = useState<string>(() => loadLastPicName());
+  const normalizedLockedPic = (lockedPicName || '').trim();
+  const [responsibleName, setResponsibleName] = useState<string>(
+    () => normalizedLockedPic || loadLastPicName()
+  );
   const [picError, setPicError] = useState(false);
 
   // Progress state
@@ -122,7 +127,7 @@ export function RefreshUmhModal({
   };
 
   const handleStartRefresh = async () => {
-    const trimmedPic = responsibleName.trim();
+    const trimmedPic = (normalizedLockedPic || responsibleName).trim();
     if (!trimmedPic) {
       setPicError(true);
       return;
@@ -519,22 +524,31 @@ export function RefreshUmhModal({
                     className="block text-xs font-semibold text-slate-800"
                   >
                     Nama Penanggung Jawab (PIC) Perubahan <span className="text-red-600">*</span>
+                    {normalizedLockedPic && (
+                      <span className="ml-1.5 text-[10px] font-medium text-[#047857]">
+                        (Otomatis dari Akun Google)
+                      </span>
+                    )}
                   </label>
                   <input
                     id="refresh-pic-name"
                     type="text"
-                    value={responsibleName}
+                    value={normalizedLockedPic || responsibleName}
+                    readOnly={Boolean(normalizedLockedPic)}
                     onChange={(e) => {
+                      if (normalizedLockedPic) return;
                       setResponsibleName(e.target.value);
                       if (e.target.value.trim()) setPicError(false);
                     }}
                     placeholder="Masukkan nama lengkap / inisial PIC (cth: Ahmad - IE)"
-                    className={`w-full px-3.5 py-2.5 text-xs bg-white border rounded-xl focus:outline-none focus:ring-2 ${
-                      picError
-                        ? 'border-red-500 focus:ring-red-500/20'
-                        : 'border-slate-300 focus:border-[#1E3A8A] focus:ring-[#1E3A8A]/20'
+                    className={`w-full px-3.5 py-2.5 text-xs border rounded-xl focus:outline-none ${
+                      normalizedLockedPic
+                        ? 'bg-emerald-50/60 border-emerald-200 text-slate-900 font-semibold cursor-not-allowed'
+                        : picError
+                        ? 'bg-white border-red-500 focus:ring-2 focus:ring-red-500/20'
+                        : 'bg-white border-slate-300 focus:border-[#1E3A8A] focus:ring-2 focus:ring-[#1E3A8A]/20'
                     }`}
-                    autoFocus
+                    autoFocus={!normalizedLockedPic}
                   />
                   {picError && (
                     <p className="text-[11px] font-medium text-red-600">

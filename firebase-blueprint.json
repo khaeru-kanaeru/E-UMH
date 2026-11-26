@@ -2,7 +2,7 @@
   "entities": {
     "UserProfile": {
       "title": "UserProfile",
-      "description": "Authenticated engineer profile and workspace preferences.",
+      "description": "Authenticated engineer profile and personal preferences.",
       "type": "object",
       "properties": {
         "uid": {
@@ -35,7 +35,7 @@
         },
         "pendingMasterSync": {
           "type": "boolean",
-          "description": "Whether master STD/Auto-Cut/Feeder changes are pending UMH Refresh."
+          "description": "Legacy personal pending master sync preference."
         },
         "createdAt": {
           "type": "string",
@@ -52,7 +52,7 @@
     },
     "MasterConfig": {
       "title": "MasterConfig",
-      "description": "User's STD parameters, 2D process matrices, modular Logic Discs, Auto-Cut list, and Feeder list.",
+      "description": "Shared team STD parameters, 2D process matrices, Auto-Cut list, and Feeder list.",
       "type": "object",
       "properties": {
         "ownerId": {
@@ -60,7 +60,7 @@
           "minLength": 1,
           "maxLength": 128,
           "pattern": "^[a-zA-Z0-9_\\-]+$",
-          "description": "Owner Firebase Auth UID."
+          "description": "Initial creator Firebase Auth UID."
         },
         "params": {
           "type": "array",
@@ -82,17 +82,9 @@
           "type": "object",
           "description": "COT taping V2 2D factor matrix (Master_COT_V2, D7..D36) stored as row-keyed numeric arrays."
         },
-        "settingWireMatrixMap": {
-          "type": "object",
-          "description": "Setting Wires on Board auto-lookup matrix (T1..T7 base rates per CCT PPCS) stored as row-keyed numeric arrays."
-        },
         "difficultyMatrixMap": {
           "type": "object",
           "description": "Manual difficulty rating percentage addition matrix (0.0..5.0 stars) stored as row-keyed numeric arrays."
-        },
-        "processDiscs": {
-          "type": "array",
-          "description": "Modular sub-process Logic Disc definitions (max 100)."
         },
         "autoCutList": {
           "type": "array",
@@ -101,6 +93,22 @@
         "feederList": {
           "type": "array",
           "description": "Wire seal feeder validation list (max 2000)."
+        },
+        "pendingMasterSync": {
+          "type": "boolean",
+          "description": "Whether shared master STD/Auto-Cut/Feeder changes are pending UMH Refresh."
+        },
+        "updatedByUid": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$",
+          "description": "UID of the Google user who last modified shared master config."
+        },
+        "updatedByName": {
+          "type": "string",
+          "maxLength": 120,
+          "description": "Display name of the Google user who last modified shared master config."
         },
         "createdAt": {
           "type": "string",
@@ -127,7 +135,7 @@
     },
     "AssyRecord": {
       "title": "AssyRecord",
-      "description": "Saved wire harness Assy configuration, BOM/PPCS/COT inputs, and calculated UMH snapshot.",
+      "description": "Shared wire harness Assy configuration, BOM/PPCS/COT inputs, user attribution, and calculated UMH snapshot.",
       "type": "object",
       "properties": {
         "id": {
@@ -142,13 +150,19 @@
           "minLength": 1,
           "maxLength": 128,
           "pattern": "^[a-zA-Z0-9_\\-]+$",
-          "description": "Owner Firebase Auth UID."
+          "description": "Initial creator Firebase Auth UID."
         },
         "assyNo": {
           "type": "string",
           "minLength": 1,
           "maxLength": 120,
           "description": "Assy part number."
+        },
+        "assyNoNormalized": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 120,
+          "description": "Lowercased trimmed Assy part number for duplicate detection."
         },
         "customer": {
           "type": "string",
@@ -183,6 +197,40 @@
           "type": "object",
           "description": "Calculated Base Cycle Time & Standard UMH breakdown."
         },
+        "createdByUid": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$",
+          "description": "Google Auth UID of the user who created this Assy."
+        },
+        "createdByName": {
+          "type": "string",
+          "maxLength": 120,
+          "description": "Google display name of the user who created this Assy."
+        },
+        "createdByEmail": {
+          "type": "string",
+          "maxLength": 254,
+          "description": "Google email of the user who created this Assy."
+        },
+        "updatedByUid": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$",
+          "description": "Google Auth UID of the user who last updated this Assy."
+        },
+        "updatedByName": {
+          "type": "string",
+          "maxLength": 120,
+          "description": "Google display name of the user who last updated this Assy."
+        },
+        "updatedByEmail": {
+          "type": "string",
+          "maxLength": 254,
+          "description": "Google email of the user who last updated this Assy."
+        },
         "createdAt": {
           "type": "string",
           "format": "date-time",
@@ -212,7 +260,7 @@
     },
     "RefreshHistoryEntry": {
       "title": "RefreshHistoryEntry",
-      "description": "Audit log of a UMH Refresh batch run including timestamp, PIC name, and affected-only diffs.",
+      "description": "Shared audit log of UMH Refresh runs, master updates, and manual Assy edits.",
       "type": "object",
       "properties": {
         "id": {
@@ -227,7 +275,7 @@
           "minLength": 1,
           "maxLength": 128,
           "pattern": "^[a-zA-Z0-9_\\-]+$",
-          "description": "Owner Firebase Auth UID."
+          "description": "Creator Firebase Auth UID."
         },
         "refreshedAt": {
           "type": "string",
@@ -238,23 +286,23 @@
           "type": "string",
           "minLength": 1,
           "maxLength": 120,
-          "description": "Person in charge (PIC) of the UMH refresh."
+          "description": "Person in charge (Google user name) of the update or refresh."
         },
         "totalSelectedCount": {
           "type": "number",
-          "description": "Number of Assys selected for refresh."
+          "description": "Number of items/Assys selected."
         },
         "affectedAssyCount": {
           "type": "number",
-          "description": "Number of Assys whose UMH changed."
+          "description": "Number of items/Assys modified."
         },
         "unaffectedAssyCount": {
           "type": "number",
-          "description": "Number of Assys unchanged."
+          "description": "Number of items/Assys unchanged."
         },
         "affectedDiffs": {
           "type": "array",
-          "description": "Affected-only Assy/Process/Sub-Step diffs (max 500)."
+          "description": "Affected-only diffs or master/manual Assy edit log payload (max 500)."
         },
         "createdAt": {
           "type": "string",
@@ -276,7 +324,7 @@
     },
     "RecycleBinItem": {
       "title": "RecycleBinItem",
-      "description": "Soft-deleted record stored in Firebase recycleBin directory for easy restore or permanent deletion.",
+      "description": "Shared soft-deleted record stored in Firebase recycleBin directory for restore or permanent deletion.",
       "type": "object",
       "properties": {
         "id": {
@@ -291,7 +339,7 @@
           "minLength": 1,
           "maxLength": 128,
           "pattern": "^[a-zA-Z0-9_\\-]+$",
-          "description": "Owner Firebase Auth UID."
+          "description": "Deleter Firebase Auth UID."
         },
         "itemType": {
           "type": "string",
@@ -299,8 +347,7 @@
             "assy_record",
             "refresh_history",
             "auto_cut_item",
-            "feeder_item",
-            "process_disc"
+            "feeder_item"
           ],
           "description": "Category of soft-deleted entity."
         },
@@ -361,31 +408,31 @@
       "schema": {
         "$ref": "#/entities/UserProfile"
       },
-      "description": "Per-user workspace profile and preferences."
+      "description": "Per-user private workspace profile and preferences."
     },
-    "/masterConfigs/{userId}": {
+    "/masterConfigs/{configId}": {
       "schema": {
         "$ref": "#/entities/MasterConfig"
       },
-      "description": "Per-user Master STD database, 2D matrices, Logic Discs, Auto-Cut list, and Feeder list."
+      "description": "Shared team Master STD database ('shared') plus legacy per-user fallback."
     },
     "/assyRecords/{recordId}": {
       "schema": {
         "$ref": "#/entities/AssyRecord"
       },
-      "description": "User-owned Wire Harness Assy records and UMH snapshots."
+      "description": "Shared Wire Harness Assy records and UMH snapshots with Google user attribution."
     },
     "/refreshHistory/{historyId}": {
       "schema": {
         "$ref": "#/entities/RefreshHistoryEntry"
       },
-      "description": "User-owned UMH Refresh audit history logs."
+      "description": "Shared audit history logs for UMH Refresh, Master edits, and manual Assy edits."
     },
     "/recycleBin/{itemId}": {
       "schema": {
         "$ref": "#/entities/RecycleBinItem"
       },
-      "description": "User-owned Recycle Bin storing soft-deleted Assy records, refresh history logs, and master items for restoration."
+      "description": "Shared Recycle Bin storing soft-deleted Assy records, refresh history logs, and master items."
     }
   }
 }

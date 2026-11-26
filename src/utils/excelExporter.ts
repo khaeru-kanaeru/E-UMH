@@ -1,4 +1,5 @@
 import XLSX from 'xlsx-js-style';
+import { resolveDifficultyPercentage } from '../data/cotMasterV2';
 import {
   getAllowanceModeLabel,
   getAllowSecForMode,
@@ -121,11 +122,12 @@ function applyRowStyle(ws: any, rowIdx: number, stylesArr: any[]) {
   });
 }
 
-export function exportUmhExcel(
+export function buildUmhExcelWorkbook(
   record: AssyRecord,
   activeMode: AllowanceMode,
-  lang: UiLang = 'id'
-): void {
+  lang: UiLang = 'id',
+  difficultyMatrix?: number[][]
+) {
   const wb = XLSX.utils.book_new();
   const { params } = record;
   const regCalc = getVariantResult(record, 'reg');
@@ -133,6 +135,15 @@ export function exportUmhExcel(
 
   const effectiveLot = getEffectiveLot(params.lot);
   const effPct = activeMode === 'none' ? 0 : params.pfdAllowancePct || 0;
+  const difficultyRating = params.difficultyRating ?? 0;
+  const difficultyPct =
+    record.calculation.difficultyPct !== undefined
+      ? record.calculation.difficultyPct
+      : resolveDifficultyPercentage(difficultyRating, difficultyMatrix);
+  const difficultySuffix =
+    difficultyRating > 0
+      ? `  |  Kesulitan: ${difficultyRating.toFixed(1)} ★ (+${difficultyPct.toFixed(2)}%)`
+      : '';
   const modeLabel =
     activeMode === 'none'
       ? '0. Tanpa Allowance (Base 0%)'
@@ -160,7 +171,7 @@ export function exportUmhExcel(
       '', '', '', '', '', '', '', '', '',
     ],
     [
-      `Assy No: ${params.assyNo}  |  Customer: ${params.customer || '-'}  |  LOT: ${effectiveLot}  |  Metode: ${modeLabel}`,
+      `Assy No: ${params.assyNo}  |  Customer: ${params.customer || '-'}  |  LOT: ${effectiveLot}  |  Metode: ${modeLabel}${difficultySuffix}`,
       '', '', '', '', '', '', '', '', '',
     ],
     [],
@@ -533,7 +544,28 @@ export function exportUmhExcel(
   appendDetailSheets('REG', regCalc);
   appendDetailSheets('SMV', smvCalc);
 
-  const safeAssy = (params.assyNo || 'Assy').replace(/[^a-zA-Z0-9_-]/g, '_');
+  return wb;
+}
+
+export function buildUmhExcelBuffer(
+  record: AssyRecord,
+  activeMode: AllowanceMode,
+  lang: UiLang = 'id',
+  difficultyMatrix?: number[][]
+): Uint8Array {
+  const wb = buildUmhExcelWorkbook(record, activeMode, lang, difficultyMatrix);
+  const out = XLSX.write(wb, { type: 'array', bookType: 'xlsx' }) as ArrayBuffer | Uint8Array;
+  return out instanceof Uint8Array ? out : new Uint8Array(out);
+}
+
+export function exportUmhExcel(
+  record: AssyRecord,
+  activeMode: AllowanceMode,
+  lang: UiLang = 'id',
+  difficultyMatrix?: number[][]
+): void {
+  const wb = buildUmhExcelWorkbook(record, activeMode, lang, difficultyMatrix);
+  const safeAssy = (record.params.assyNo || 'Assy').replace(/[^a-zA-Z0-9_-]/g, '_');
   XLSX.writeFile(wb, `STD_UMH_${safeAssy}.xlsx`);
 }
 

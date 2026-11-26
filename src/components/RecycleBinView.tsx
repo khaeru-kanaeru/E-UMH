@@ -6,7 +6,6 @@ import {
   Copy,
   Cpu,
   Database,
-  Disc,
   ExternalLink,
   History,
   RefreshCw,
@@ -15,6 +14,11 @@ import {
   Trash2,
   X,
 } from 'lucide-react';
+import {
+  FIREBASE_PROJECT_ID,
+  FIRESTORE_CONSOLE_RULES_URL,
+  FIRESTORE_DATABASE_ID,
+} from '../firebase';
 import { RecycleBinItem, RecycleBinItemType } from '../types/umh';
 
 interface RecycleBinViewProps {
@@ -55,12 +59,6 @@ const TYPE_META: Record<
     shortLabel: 'Riwayat',
     colorClass: 'text-amber-700',
     icon: History,
-  },
-  process_disc: {
-    label: 'Logic Disc Kustom',
-    shortLabel: 'Logic Disc',
-    colorClass: 'text-indigo-700',
-    icon: Disc,
   },
 };
 
@@ -104,7 +102,6 @@ export function RecycleBinView({
       auto_cut_item: 0,
       feeder_item: 0,
       refresh_history: 0,
-      process_disc: 0,
     };
     items.forEach((it) => {
       if (it.itemType in map) {
@@ -161,7 +158,6 @@ export function RecycleBinView({
     { id: 'auto_cut_item', label: 'Auto-Cut' },
     { id: 'feeder_item', label: 'Feeder' },
     { id: 'refresh_history', label: 'Riwayat Refresh' },
-    { id: 'process_disc', label: 'Logic Disc' },
   ];
 
   return (
@@ -274,7 +270,7 @@ export function RecycleBinView({
           </div>
         </div>
 
-        {/* Rules Publish Guidance for (default) database */}
+        {/* Rules Publish Guidance for active Firestore database */}
         {isCloudActive && recycleBinNeedsRulesPublish && (
           <div className="mt-4 p-4 rounded-xl bg-amber-50 border border-amber-200 text-xs text-amber-950 flex flex-col lg:flex-row lg:items-center justify-between gap-3">
             <div className="flex items-start gap-2.5">
@@ -282,12 +278,12 @@ export function RecycleBinView({
               <div>
                 <p className="font-semibold">
                   Aturan koleksi <span className="font-mono-num">/recycleBin</span> belum dipublikasikan di database{' '}
-                  <span className="font-mono-num">(default)</span> proyek{' '}
-                  <span className="font-mono-num">estdumh</span>.
+                  <span className="font-mono-num">{FIRESTORE_DATABASE_ID}</span> proyek{' '}
+                  <span className="font-mono-num">{FIREBASE_PROJECT_ID}</span>.
                 </p>
                 <p className="text-amber-900/90 mt-0.5">
                   Klik <strong>Salin Firestore Rules</strong>, tempel pada halaman Rules database{' '}
-                  <span className="font-mono-num">(default)</span> lalu klik <strong>Publish</strong>, kemudian klik{' '}
+                  <span className="font-mono-num">{FIRESTORE_DATABASE_ID}</span> lalu klik <strong>Publish</strong>, kemudian klik{' '}
                   <strong>Sinkronkan Ulang</strong>.
                 </p>
               </div>
@@ -308,13 +304,13 @@ export function RecycleBinView({
                 <span>{copiedRules ? 'Rules Tersalin!' : 'Salin Firestore Rules'}</span>
               </button>
               <a
-                href="https://console.firebase.google.com/project/estdumh/firestore/databases/-default-/rules"
+                href={FIRESTORE_CONSOLE_RULES_URL}
                 target="_blank"
                 rel="noopener noreferrer"
                 className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-white border border-amber-300 text-amber-950 text-xs font-semibold hover:bg-amber-100 whitespace-nowrap"
               >
                 <ExternalLink className="w-3.5 h-3.5" />
-                <span>Buka Rules (default)</span>
+                <span>Buka Rules Console</span>
               </a>
               <button
                 type="button"
@@ -359,8 +355,8 @@ export function RecycleBinView({
                   : 'Tidak ada item terhapus yang cocok dengan filter'}
               </p>
               <p className="text-xs text-slate-500 mt-1 max-w-md mx-auto">
-                Saat Anda menghapus data Assy, Auto-Cut Terminal, Feeder Seal, Riwayat Refresh,
-                atau Logic Disc kustom, item akan dipindahkan ke sini agar mudah dipulihkan.
+                Saat Anda menghapus data Assy, Auto-Cut Terminal, Feeder Seal, atau Riwayat
+                Refresh, item akan dipindahkan ke sini agar mudah dipulihkan.
               </p>
             </div>
           ) : (

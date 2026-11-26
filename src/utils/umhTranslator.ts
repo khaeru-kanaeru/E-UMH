@@ -656,6 +656,11 @@ const SUBSTEP_EXACT: Record<string, Record<UiLang, string>> = {
     en: 'Visual inspection formula (0.0001*CCT + 0.0083)*86400',
     jp: '目視検査計算式 (0.0001×CCT + 0.0083)×86400',
   },
+  'Checker formula (0.00004*CCT + 0.0014)*86400': {
+    id: 'Rumus uji kontinuitas linear (0.00004×CCT + 0.0014)×86400',
+    en: 'Checker linear formula (0.00004*CCT + 0.0014)*86400',
+    jp: '導通検査 線形計算式 (0.00004×CCT + 0.0014)×86400',
+  },
   'Checker Linear (<200 CCT)': {
     id: 'Uji Kontinuitas Linear (<200 CCT)',
     en: 'Checker Linear (<200 CCT)',

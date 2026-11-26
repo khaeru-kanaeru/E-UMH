@@ -30,6 +30,7 @@ interface AutoCutFeederViewProps {
   feederList: FeederItem[];
   autoCutHistoryCount: number;
   feederHistoryCount: number;
+  currentUserName?: string;
   onOpenMasterHistory: (cat: 'auto_cut' | 'feeder') => void;
   onCommitAutoCutChange: (
     nextList: AutoCutItem[],
@@ -60,6 +61,7 @@ export function AutoCutFeederView({
   feederList,
   autoCutHistoryCount,
   feederHistoryCount,
+  currentUserName,
   onOpenMasterHistory,
   onCommitAutoCutChange,
   onCommitFeederChange,
@@ -555,6 +557,7 @@ export function AutoCutFeederView({
           uploadedFeederItems={bulkModal.uploadedFeederItems}
           resetTargetAutoCut={bulkModal.resetTargetAutoCut}
           resetTargetFeeder={bulkModal.resetTargetFeeder}
+          lockedPicName={currentUserName}
           onCommitAutoCut={handleCommitAc}
           onCommitFeeder={handleCommitFd}
           onClose={() => setBulkModal(null)}

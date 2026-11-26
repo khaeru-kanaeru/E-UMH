@@ -4,8 +4,12 @@ import { doc, getDocFromServer, getFirestore } from 'firebase/firestore';
 import firebaseConfig from '../firebase-applet-config.json';
 
 const app = initializeApp(firebaseConfig);
-export const FIRESTORE_DATABASE_ID = '(default)';
-export const db = getFirestore(app, FIRESTORE_DATABASE_ID);
+export const FIREBASE_PROJECT_ID = firebaseConfig.projectId;
+export const FIRESTORE_DATABASE_ID = firebaseConfig.firestoreDatabaseId || '(default)';
+export const FIRESTORE_CONSOLE_RULES_URL = `https://console.firebase.google.com/project/${encodeURIComponent(FIREBASE_PROJECT_ID)}/firestore/databases/${encodeURIComponent(FIRESTORE_DATABASE_ID === '(default)' ? '-default-' : FIRESTORE_DATABASE_ID)}/rules`;
+export const db = getFirestore(app, firebaseConfig.firestoreDatabaseId);
+export const legacyDefaultDb =
+  FIRESTORE_DATABASE_ID !== '(default)' ? getFirestore(app, '(default)') : null;
 export const auth = getAuth(app);
 export const googleProvider = new GoogleAuthProvider();
 googleProvider.setCustomParameters({ prompt: 'select_account' });

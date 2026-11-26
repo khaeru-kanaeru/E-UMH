@@ -39,6 +39,7 @@ interface MasterListBulkEditModalProps {
   uploadedFeederItems?: FeederItem[];
   resetTargetAutoCut?: AutoCutItem[];
   resetTargetFeeder?: FeederItem[];
+  lockedPicName?: string;
   onCommitAutoCut?: (
     nextList: AutoCutItem[],
     entry: MasterChangeHistoryEntry,
@@ -74,6 +75,7 @@ export function MasterListBulkEditModal({
   uploadedFeederItems,
   resetTargetAutoCut,
   resetTargetFeeder,
+  lockedPicName,
   onCommitAutoCut,
   onCommitFeeder,
   onClose,
@@ -101,7 +103,10 @@ export function MasterListBulkEditModal({
   const [onlyChanged, setOnlyChanged] = useState(false);
 
   // Confirmation metadata
-  const [picName, setPicName] = useState<string>(() => loadLastPicName());
+  const normalizedLockedPic = (lockedPicName || '').trim();
+  const [picName, setPicName] = useState<string>(
+    () => normalizedLockedPic || loadLastPicName()
+  );
   const [note, setNote] = useState<string>('');
   const [picError, setPicError] = useState<string | null>(null);
 
@@ -250,7 +255,7 @@ export function MasterListBulkEditModal({
   }, [fdRows, searchQuery, onlyChanged, origFdMap]);
 
   const handleConfirmSave = () => {
-    const trimmedPic = picName.trim();
+    const trimmedPic = (normalizedLockedPic || picName).trim();
     if (!trimmedPic) {
       setPicError('Nama penanggung jawab (PIC) wajib diisi sebelum menyimpan perubahan.');
       return;
@@ -722,17 +727,28 @@ export function MasterListBulkEditModal({
                     <span className="inline-flex items-center gap-1.5">
                       <UserCheck className="w-3.5 h-3.5 text-[#1E3A8A]" />
                       Nama Penanggung Jawab (PIC) *
+                      {normalizedLockedPic && (
+                        <span className="text-[10px] font-medium text-[#047857]">
+                          (Otomatis dari Akun Google)
+                        </span>
+                      )}
                     </span>
                   </label>
                   <input
                     type="text"
-                    value={picName}
+                    value={normalizedLockedPic || picName}
+                    readOnly={Boolean(normalizedLockedPic)}
                     onChange={(e) => {
+                      if (normalizedLockedPic) return;
                       setPicName(e.target.value);
                       if (picError) setPicError(null);
                     }}
                     placeholder="Contoh: Budi Santoso / PE Team"
-                    className="w-full px-3.5 py-2 text-xs font-medium bg-slate-50 border border-slate-200 rounded-xl focus:bg-white focus:outline-none focus:ring-2 focus:ring-[#1E3A8A]/20 focus:border-[#1E3A8A]"
+                    className={`w-full px-3.5 py-2 text-xs font-medium border rounded-xl focus:outline-none ${
+                      normalizedLockedPic
+                        ? 'bg-emerald-50/60 border-emerald-200 text-slate-900 cursor-not-allowed'
+                        : 'bg-slate-50 border-slate-200 focus:bg-white focus:ring-2 focus:ring-[#1E3A8A]/20 focus:border-[#1E3A8A]'
+                    }`}
                   />
                   {picError && <p className="text-[11px] text-red-600 mt-1">{picError}</p>}
                 </div>

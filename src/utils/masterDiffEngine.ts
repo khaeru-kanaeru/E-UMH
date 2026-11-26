@@ -1,11 +1,10 @@
 import {
   STD_COT_COL_LABELS,
   STD_COT_ROW_LABELS,
-  STD_SETTING_WIRE_COL_LABELS,
-  STD_SETTING_WIRE_ROW_LABELS,
   DIFFICULTY_ROW_LABELS,
 } from '../data/cotMasterV2';
 import {
+  AssyRecord,
   AutoCutItem,
   FeederItem,
   MasterChangeCategory,
@@ -15,12 +14,11 @@ import {
   StdDatabase,
   StdParamItem,
 } from '../types/umh';
+import { getAllowanceModeLabel, getAllowSecForMode } from '../engine/umhCalculator';
 
 export {
   STD_COT_COL_LABELS,
   STD_COT_ROW_LABELS,
-  STD_SETTING_WIRE_COL_LABELS,
-  STD_SETTING_WIRE_ROW_LABELS,
   DIFFICULTY_ROW_LABELS,
 };
 
@@ -29,7 +27,6 @@ export type MatrixKey =
   | 'saMatrix'
   | 'mcMatrix'
   | 'cotMatrix'
-  | 'settingWireMatrix'
   | 'difficultyMatrix';
 
 export const STD_COL_LABELS_7 = [
@@ -135,18 +132,6 @@ export const MATRIX_CONFIGS: MatrixConfigDef[] = [
     unitLabel: 'Master_COT_V2',
     rowLabels: STD_COT_ROW_LABELS,
     colLabels: STD_COT_COL_LABELS,
-  },
-  {
-    key: 'settingWireMatrix',
-    name: 'Matriks Setting Wires on Board (T1–T7)',
-    shortName: 'Setting Wires (T1–T7)',
-    sheetName: 'Matriks Setting Wire',
-    title: 'Auto-Lookup Matrix Setting Wires on Board — MATRIX_SETTING_WIRE_CCT (Jenjang CCT PPCS × Rate dtk/CCT)',
-    rowHeaderLabel: 'Jenjang CCT (PPCS)',
-    colSuffix: '',
-    unitLabel: 'dtk / CCT',
-    rowLabels: STD_SETTING_WIRE_ROW_LABELS,
-    colLabels: STD_SETTING_WIRE_COL_LABELS,
   },
   {
     key: 'difficultyMatrix',
@@ -402,15 +387,168 @@ export function createMasterChangeEntry(params: {
   };
 }
 
+export function computeAssyManualEditDiff(
+  before: AssyRecord,
+  after: AssyRecord
+): MasterChangeDiffItem[] {
+  const diffs: MasterChangeDiffItem[] = [];
+  const group = `Assy ${after.params.assyNo || before.params.assyNo}`;
+
+  const pushTextDiff = (key: string, label: string, subLabel: string, prevVal: string, nextVal: string) => {
+    if (prevVal.trim() !== nextVal.trim()) {
+      diffs.push({
+        key,
+        group,
+        label,
+        subLabel,
+        action: 'modified',
+        beforeValue: prevVal || '-',
+        afterValue: nextVal || '-',
+        deltaNumeric: null,
+      });
+    }
+  };
+
+  const pushNumDiff = (
+    key: string,
+    label: string,
+    subLabel: string,
+    prevVal: number,
+    nextVal: number,
+    digits = 2,
+    suffix = ''
+  ) => {
+    if (Math.abs(prevVal - nextVal) >= 1e-6) {
+      const delta = Number((nextVal - prevVal).toFixed(digits));
+      diffs.push({
+        key,
+        group,
+        label,
+        subLabel,
+        action: 'modified',
+        beforeValue: `${prevVal.toFixed(digits)}${suffix}`,
+        afterValue: `${nextVal.toFixed(digits)}${suffix}`,
+        deltaNumeric: delta,
+      });
+    }
+  };
+
+  pushTextDiff('assy_no', 'Assy Number', 'Identitas Assy', before.params.assyNo, after.params.assyNo);
+  pushTextDiff('customer', 'Customer', 'Identitas Assy', before.params.customer || '-', after.params.customer || '-');
+  pushNumDiff('master_cct', 'Jumlah CCT', 'Parameter Produksi', before.params.masterCct, after.params.masterCct, 0, ' CCT');
+  pushNumDiff('lot', 'LOT Produksi', 'Parameter Produksi', before.params.lot ?? 15, after.params.lot ?? 15, 0, '');
+
+  const prevDiffStar = before.params.difficultyRating ?? 0;
+  const nextDiffStar = after.params.difficultyRating ?? 0;
+  if (Math.abs(prevDiffStar - nextDiffStar) >= 1e-6) {
+    diffs.push({
+      key: 'difficulty_rating',
+      group,
+      label: 'Tingkat Kesulitan (Bintang)',
+      subLabel: 'Pengaturan Kesulitan',
+      action: 'modified',
+      beforeValue: `${prevDiffStar.toFixed(1)} ★ (+${(before.calculation.difficultyPct ?? 0).toFixed(2)}%)`,
+      afterValue: `${nextDiffStar.toFixed(1)} ★ (+${(after.calculation.difficultyPct ?? 0).toFixed(2)}%)`,
+      deltaNumeric: Number((nextDiffStar - prevDiffStar).toFixed(1)),
+    });
+  }
+
+  if (before.params.allowanceMode !== after.params.allowanceMode) {
+    diffs.push({
+      key: 'allowance_mode',
+      group,
+      label: 'Metode Allowance',
+      subLabel: 'Pengaturan Allowance',
+      action: 'modified',
+      beforeValue: getAllowanceModeLabel(before.params.allowanceMode, 'short'),
+      afterValue: getAllowanceModeLabel(after.params.allowanceMode, 'short'),
+      deltaNumeric: null,
+    });
+  }
+
+  const prevPfd = before.params.allowanceMode === 'none' ? 0 : before.params.pfdAllowancePct || 0;
+  const nextPfd = after.params.allowanceMode === 'none' ? 0 : after.params.pfdAllowancePct || 0;
+  pushNumDiff('pfd_allowance', 'Persentase Allowance PFD', 'Pengaturan Allowance', prevPfd, nextPfd, 2, '%');
+
+  // Assembly components
+  const asmFields: { key: keyof AssyRecord['assemblyComponents']; label: string }[] = [
+    { key: 'markerQty', label: 'Komponen Marker (nm)' },
+    { key: 'spotTapeQty', label: 'Komponen Spot Tape (ns)' },
+    { key: 'namePlateQty', label: 'Komponen Name Plate (nn)' },
+    { key: 'clipQty', label: 'Komponen Clip (nx)' },
+    { key: 'clampQty', label: 'Komponen Clamp (ny)' },
+  ];
+  asmFields.forEach(({ key, label }) => {
+    pushNumDiff(
+      `asm_${key}`,
+      label,
+      'Komponen Assembly',
+      before.assemblyComponents?.[key] ?? 0,
+      after.assemblyComponents?.[key] ?? 0,
+      0
+    );
+  });
+
+  // Dataset counts
+  pushNumDiff('pl_count', 'Jumlah Baris PART LIST', 'Data BOM', before.partList.length, after.partList.length, 0);
+  pushNumDiff('ppcs_count', 'Jumlah Sirkuit PPCS', 'Data Wire List', before.ppcsList.length, after.ppcsList.length, 0);
+  pushNumDiff('cot_count', 'Jumlah Baris Assembly COT', 'Data COT', before.assemblyCotList.length, after.assemblyCotList.length, 0);
+
+  // Terminal ratios change summary
+  const beforeRatiosJson = JSON.stringify(before.terminalRatios || {});
+  const afterRatiosJson = JSON.stringify(after.terminalRatios || {});
+  if (beforeRatiosJson !== afterRatiosJson) {
+    diffs.push({
+      key: 'terminal_ratios',
+      group,
+      label: 'Rasio Terminal Auto-Cut',
+      subLabel: 'Konfigurasi Mesin',
+      action: 'modified',
+      beforeValue: `${Object.keys(before.terminalRatios || {}).length} terminal`,
+      afterValue: `${Object.keys(after.terminalRatios || {}).length} terminal (diperbarui)`,
+      deltaNumeric: null,
+    });
+  }
+
+  // Resulting Base Cycle & Standard Allow UMH
+  pushNumDiff(
+    'base_cycle_sec',
+    'Base Cycle + Kesulitan (REG)',
+    'Hasil Kalkulasi (Detik)',
+    before.calculation.totalBaseSec,
+    after.calculation.totalBaseSec,
+    2,
+    ' s'
+  );
+
+  const beforeAllowSec = getAllowSecForMode(
+    before.params.allowanceMode,
+    before.calculation.totalBaseSec,
+    before.calculation.totalAllowByProcessSec,
+    before.calculation.totalAllowByFinalSec
+  );
+  const afterAllowSec = getAllowSecForMode(
+    after.params.allowanceMode,
+    after.calculation.totalBaseSec,
+    after.calculation.totalAllowByProcessSec,
+    after.calculation.totalAllowByFinalSec
+  );
+  pushNumDiff('allow_sec', 'Total Allow REG (Detik)', 'Hasil Kalkulasi (Detik)', beforeAllowSec, afterAllowSec, 2, ' s');
+  pushNumDiff('allow_hr', 'Standard UMH REG (Hour)', 'Hasil Kalkulasi (Jam)', beforeAllowSec / 3600, afterAllowSec / 3600, 4, ' hr');
+
+  return diffs;
+}
+
 export const MASTER_CATEGORY_LABELS: Record<MasterChangeCategory, string> = {
   std_params: 'Parameter STD (Sub-Step)',
   std_matrices: 'Matriks 2D (LOT × Panjang & COT V2)',
   auto_cut: 'Auto Cutting List',
   feeder: 'Feeder List (Wire Seal)',
+  assy_manual_edit: 'Perubahan Manual Assy',
 };
 
 export const MASTER_SOURCE_LABELS: Record<MasterChangeSource, string> = {
-  manual_edit: 'Edit Manual Massal',
+  manual_edit: 'Edit Manual',
   excel_upload: 'Upload Excel',
   reset_default: 'Reset Default',
 };

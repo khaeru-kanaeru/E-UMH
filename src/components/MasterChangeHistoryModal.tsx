@@ -26,6 +26,7 @@ interface MasterChangeHistoryModalProps {
 
 const CATEGORY_TABS: { id: 'all' | MasterChangeCategory; label: string }[] = [
   { id: 'all', label: 'Semua' },
+  { id: 'assy_manual_edit', label: 'Edit Assy' },
   { id: 'std_params', label: 'Sub-Step' },
   { id: 'std_matrices', label: 'Matriks 2D' },
   { id: 'auto_cut', label: 'Auto-Cut' },
@@ -86,10 +87,10 @@ export function MasterChangeHistoryModal({
             </div>
             <div>
               <p className="text-[11px] font-semibold text-[#1E3A8A]">
-                マスタ変更履歴 · Audit Log Master Data
+                変更履歴 · Audit Log Master &amp; Perubahan Manual Assy
               </p>
               <h2 className="text-lg font-bold text-slate-900">
-                Riwayat Perubahan Parameter STD, Matriks &amp; Equipment List
+                Riwayat Perubahan Master STD, Equipment List &amp; Edit Manual Assy
               </h2>
             </div>
           </div>
@@ -153,8 +154,8 @@ export function MasterChangeHistoryModal({
               </h3>
               <p className="text-xs text-slate-500 leading-relaxed">
                 Setiap perubahan pada <strong>Parameter STD</strong>, <strong>Matriks 2D</strong>,{' '}
-                <strong>Auto Cutting List</strong>, maupun <strong>Feeder List</strong> (baik edit
-                manual massal, upload Excel, atau reset default) akan tercatat lengkap di sini.
+                <strong>Auto Cutting List</strong>, <strong>Feeder List</strong>, maupun{' '}
+                <strong>Perubahan Manual pada Assy</strong> (parameter, allowance, tingkat kesulitan, atau BOM/PPCS/COT) akan tercatat lengkap di sini beserta nama PIC Google.
               </p>
             </div>
           </div>
