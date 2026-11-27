@@ -100,6 +100,7 @@ import {
 import { computeAssyManualEditDiff, createMasterChangeEntry } from './utils/masterDiffEngine';
 import { PdfLayoutMode } from './utils/pdfExporter';
 import {
+  hydrateLocalWorkspaceFromIdb,
   loadAssyRecords,
   loadAutoCutList,
   loadFeederList,
@@ -161,6 +162,7 @@ export default function App() {
   const [recycleBin, setRecycleBin] = useState<RecycleBinItem[]>(() => loadRecycleBin());
 
   // Firebase Auth & Sync state
+  const [idbReady, setIdbReady] = useState(false);
   const [authReady, setAuthReady] = useState(false);
   const [authUser, setAuthUser] = useState<User | null>(null);
   const [authBusy, setAuthBusy] = useState(false);
@@ -332,11 +334,6 @@ export default function App() {
           }
           return next;
         });
-
-        // Cache first page locally for quick offline fallback
-        if (effectiveIndex === 0 && pageRes.records.length > 0) {
-          saveAssyPayloads(pageRes.records);
-        }
       } catch (err) {
         handleCloudMutationError(err);
       } finally {
@@ -345,6 +342,34 @@ export default function App() {
     },
     [handleCloudMutationError]
   );
+
+  // Hydrate offline workspace from IndexedDB (and purge any legacy localStorage keys)
+  useEffect(() => {
+    let active = true;
+    void hydrateLocalWorkspaceFromIdb().then((ws) => {
+      if (!active) return;
+      localSnapshotRef.current.stdDb = ws.stdDb;
+      localSnapshotRef.current.autoCutList = ws.autoCutList;
+      localSnapshotRef.current.feederList = ws.feederList;
+      localSnapshotRef.current.localRecords = ws.records;
+      localSnapshotRef.current.refreshHistory = ws.refreshHistory;
+      localSnapshotRef.current.recycleBin = ws.recycleBin;
+      localSnapshotRef.current.hasPendingMasterChanges = ws.pendingMasterSync;
+
+      setStdDb(ws.stdDb);
+      setAutoCutList(ws.autoCutList);
+      setFeederList(ws.feederList);
+      setLocalRecords(ws.records);
+      setRefreshHistory(ws.refreshHistory);
+      setMasterChangeHistory(ws.masterChangeHistory);
+      setRecycleBin(ws.recycleBin);
+      setHasPendingMasterChanges(ws.pendingMasterSync);
+      setIdbReady(true);
+    });
+    return () => {
+      active = false;
+    };
+  }, []);
 
   // Auth listener
   useEffect(() => {
@@ -365,7 +390,7 @@ export default function App() {
 
   // Firestore shared cross-account subscriptions + initial page 1 fetch (33 records)
   useEffect(() => {
-    if (!authReady || !authUser || !authUser.emailVerified) {
+    if (!idbReady || !authReady || !authUser || !authUser.emailVerified) {
       return;
     }
 
@@ -477,7 +502,7 @@ export default function App() {
       cancelled = true;
       unsubs.forEach((fn) => fn());
     };
-  }, [authReady, authUser, cloudRetryNonce, handleCloudMutationError, loadCloudAssyPage]);
+  }, [idbReady, authReady, authUser, cloudRetryNonce, handleCloudMutationError, loadCloudAssyPage]);
 
   // Automatically retry cloud sync when browser regains connectivity
   useEffect(() => {
